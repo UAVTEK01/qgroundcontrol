@@ -1,0 +1,82 @@
+name: Android APK (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or tag to build (e.g. main, feat/stabilizer, v4.5.10)"
+        required: true
+        default: "main"
+      abis:
+        description: "Android ABIs"
+        required: true
+        default: "arm64-v8a"
+      qt_version:
+        description: "Qt version"
+        required: true
+        default: "5.15.2"
+      ndk_version:
+        description: "Android NDK version"
+        required: true
+        default: "21.3.6528147"
+      sdk_platform:
+        description: "Android SDK platform"
+        required: true
+        default: "android-30"
+
+jobs:
+  build-android:
+    runs-on: ubuntu-22.04
+    env:
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/Android
+    steps:
+      - name: Checkout (with submodules) at ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+
+      - name: Install Qt (with Android)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ inputs.qt_version }}
+          host: linux
+          target: android
+          cache: true
+
+      - name: Install Android SDK + NDK
+        uses: android-actions/setup-android@v3
+
+      - name: SDK components
+        run: |
+          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" \
+            "platform-tools" "platforms;${{ inputs.sdk_platform }}" \
+            "build-tools;30.0.3" "ndk;${{ inputs.ndk_version }}"
+
+      - name: Configure (qmake)
+        run: |
+          mkdir -p build-android && cd build-android
+          ${HOME}/Qt/${{ inputs.qt_version }}/android/bin/qmake -r ../qgroundcontrol.pro -spec android-clang \
+            CONFIG+=release ANDROID_ABIS="${{ inputs.abis }}"
+
+      - name: Build
+        run: |
+          cd build-android
+          make -j$(nproc)
+
+      - name: Package APK
+        run: |
+          cd build-android/android-build
+          ./gradlew --no-daemon assembleRelease
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: qgc-apk-${{ inputs.ref }}
+          path: build-android/android-build/app/build/outputs/apk/release/*.apk
