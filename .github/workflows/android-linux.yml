@@ -5,6 +5,7 @@ on:
     branches:
       - master
       - 'Stable*'
+    workflow_dispatch:
     tags:
       - 'v*'
     paths-ignore:
