@@ -10,14 +10,15 @@ jobs:
     env:
       QT_VERSION: "6.6.3"
       ANDROID_API: "33"
-      ANDROID_NDK_VERSION: "25.2.9519653"     # r25c (Qt 6.6.x recommended)
+      ANDROID_NDK_VERSION: "25.2.9519653"           # r25c (Qt 6.6.x compatible)
       ANDROID_SDK_ROOT: "${{ github.workspace }}/android-sdk"
       ANDROID_HOME: "${{ github.workspace }}/android-sdk"
       NDK_ROOT: "${{ github.workspace }}/android-sdk/ndk/25.2.9519653"
+      ANDROID_NDK_HOME: "${{ github.workspace }}/android-sdk/ndk/25.2.9519653"
       BUILD_DIR: build-android
       QT_HOST_KIT: "gcc_64"
       QT_ANDROID_KIT: "android_arm64_v8a"
-      QT_BASE_URL: "https://download.qt.io"   # pin to official mirror
+      QT_BASE_URL: "https://download.qt.io"
 
     steps:
       - name: Checkout (with submodules)
@@ -45,21 +46,36 @@ jobs:
           unzip -q cmdtools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
           mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
 
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses
-          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" \
+          # Make sure sdkmanager is on PATH for this step and later ones
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+
+          yes | sdkmanager --licenses
+          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" \
             "platform-tools" \
             "platforms;android-${ANDROID_API}" \
             "build-tools;34.0.0" \
             "ndk;${ANDROID_NDK_VERSION}"
 
+          # Helpful PATH exports for subsequent steps
+          echo "PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/build-tools/34.0.0:$PATH" >> $GITHUB_ENV
+
       - name: Install Qt 6.6.3 (host + Android kits)
         run: |
           set -e
           mkdir -p $HOME/Qt
-          # Desktop kit
+
+          # Host (desktop) kit
           for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux desktop ${QT_VERSION} ${QT_HOST_KIT} --outputdir $HOME/Qt && break || sleep 10; done
-          # Android kit
-          for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux android ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt && break || sleep 10; done
+
+          # Android kit (+ modules QGC typically needs)
+          for i in 1 2 3; do \
+            aqt install-qt --base "${QT_BASE_URL}" linux android ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt \
+              -m qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat \
+            && break || sleep 10; \
+          done
+
+          echo "QT_HOST_PATH=$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}" >> $GITHUB_ENV
+          echo "QT_ANDROID_PATH=$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}" >> $GITHUB_ENV
 
       - name: Print env & key paths (diagnostics)
         run: |
@@ -74,18 +90,24 @@ jobs:
           ls -la "$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}/bin" || true
           ls -la "$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}/bin" || true
 
-      - name: Configure CMake (Android arm64-v8a)
+      - name: Configure (Android arm64-v8a) via qt-cmake
+        env:
+          QT_HOST_PATH: ${{ env.QT_HOST_PATH }}
+          QT_ANDROID_PATH: ${{ env.QT_ANDROID_PATH }}
         run: |
           set -e
-          # Ensure these expand in-shell so Toolchain.cmake sees real paths
-          export QT_HOST_PATH="$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}"
-          export QT_ANDROID_PATH="$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}"
+          export QT_HOST_PATH="${QT_HOST_PATH:-$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}}"
+          export QT_ANDROID_PATH="${QT_ANDROID_PATH:-$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}}"
+
           echo "QT_HOST_PATH=${QT_HOST_PATH}"
           echo "QT_ANDROID_PATH=${QT_ANDROID_PATH}"
 
-          # Run configure and, on failure, dump detailed logs
+          # Ensure Qt host bin on PATH so lrelease, rcc, etc. are discoverable
+          export PATH="$QT_HOST_PATH/bin:$PATH"
+
+          # Use Qt's wrapper to help CMake find the right Qt6 packages
           set -o pipefail
-          cmake -S . -B "${BUILD_DIR}" -G Ninja \
+          "$QT_HOST_PATH/bin/qt-cmake" -S . -B "${BUILD_DIR}" -G Ninja \
             -D CMAKE_BUILD_TYPE=Release \
             -D ANDROID=ON \
             -D ANDROID_ABI=arm64-v8a \
