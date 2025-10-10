@@ -17,7 +17,7 @@ jobs:
       BUILD_DIR: build-android
       QT_HOST_KIT: "gcc_64"
       QT_ANDROID_KIT: "android_arm64_v8a"
-      QT_BASE_URL: "https://download.qt.io"   # pin to official mirror
+      QT_BASE_URL: "https://download.qt.io"   # use official mirror
 
     steps:
       - name: Checkout (with submodules)
@@ -31,10 +31,10 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Install build tools
+      - name: Install build tools (ninja, aqt, speedups)
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build python3-pip unzip zip
+          sudo apt-get install -y ninja-build python3-pip unzip zip lld ccache
           python3 -m pip install --upgrade "aqtinstall>=3.3.0"
 
       - name: Install Android SDK + NDK r25c
@@ -50,14 +50,15 @@ jobs:
             "build-tools;34.0.0" \
             "ndk;${ANDROID_NDK_VERSION}"
 
-      - name: Install Qt 6.6.3 (host + Android kits)
+      - name: Install Qt 6.6.3 (host + Android kits with required modules)
         run: |
           mkdir -p $HOME/Qt
-          # Desktop kit (includes qttools module already). Retry to handle transient mirror hiccups.
+          # Desktop kit
           for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux desktop ${QT_VERSION} ${QT_HOST_KIT} --outputdir $HOME/Qt && break || sleep 10; done
-          # Android kit
-          for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux android  ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt && break || sleep 10; done
-        # -> $HOME/Qt/6.6.3/gcc_64 and $HOME/Qt/6.6.3/android_arm64_v8a
+          # Android kit + modules commonly required by QGC
+          for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux android ${QT_VERSION} ${QT_ANDROID_KIT} \
+            --modules qtbase,qtdeclarative,qtquick3d,qtcharts,qtsvg,qtserialport,qtpositioning,qtshadertools,qtlocation \
+            --outputdir $HOME/Qt && break || sleep 10; done
 
       - name: PATH sanity (Qt tools available)
         run: |
@@ -82,7 +83,7 @@ jobs:
       - name: Configure CMake (Android arm64-v8a)
         run: |
           set -e
-          # Expand these in-shell so Toolchain.cmake sees real paths
+          # Ensure these expand in-shell so Toolchain.cmake sees real paths
           export QT_HOST_PATH="$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}"
           export QT_ANDROID_PATH="$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}"
           echo "QT_HOST_PATH=${QT_HOST_PATH}"
@@ -111,16 +112,23 @@ jobs:
             exit $STATUS
           fi
 
-      - name: Build (verbose)
+      - name: Build (verbose, capture failures)
         run: |
-          cmake --build "${BUILD_DIR}" --config Release -- -v
+          set -o pipefail
+          cmake --build "${BUILD_DIR}" --config Release -- -v 2>&1 | tee build.log
+          STATUS=${PIPESTATUS[0]}
+          if [ $STATUS -ne 0 ]; then
+            echo "------ tail build.log (500 lines) ------"
+            tail -n 500 build.log || true
+            # Common hint: missing Qt libs on Android -> install corresponding modules in aqt step.
+            exit $STATUS
+          fi
 
       - name: Package APK & list outputs
         run: |
           # Try CMake's 'apk' target if present
           cmake --build "${BUILD_DIR}" --target apk || true
           echo "🔍 Searching for APK/AAB outputs..."
-          # androiddeployqt often creates an android-build/ directory
           find "${BUILD_DIR}" -type d -iname "android-build" -print || true
           find "${BUILD_DIR}" -name "*.apk" -print || true
           find "${BUILD_DIR}" -name "*.aab" -print || true
@@ -130,6 +138,7 @@ jobs:
         with:
           name: qgroundcontrol-android
           path: |
+            ${BUILD_DIR}/**/outputs/**/*.apk
             ${BUILD_DIR}/**/android-build/**/*.apk
             ${BUILD_DIR}/**/*.apk
             ${BUILD_DIR}/**/*.aab
