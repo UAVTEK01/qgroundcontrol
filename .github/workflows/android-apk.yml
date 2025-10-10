@@ -1,4 +1,4 @@
-name: android-linux
+name: Build QGroundControl Android
 
 on:
   workflow_dispatch:
@@ -90,7 +90,7 @@ jobs:
           # Host Qt (desktop)
           aqt install-qt linux desktop "${QT_VERSION}" "${QT_HOST_KIT}" --outputdir "$HOME/Qt"
 
-          # Android Qt — ONLY CHANGE: no '-m ...' module list.
+          # Android Qt — ONLY CHANGE: no '-m ...' module list (fix for aqt error)
           aqt install-qt linux android "${QT_VERSION}" "${QT_ANDROID_KIT}" --outputdir "$HOME/Qt"
 
           echo "QT_HOST_PATH=$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}" >> $GITHUB_ENV
