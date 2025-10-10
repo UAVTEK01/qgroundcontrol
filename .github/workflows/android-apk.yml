@@ -72,10 +72,13 @@ jobs:
           ls -la "$HOME/Qt/${QT_VERSION}" || true
 
       - name: Configure CMake (Android arm64-v8a)
-        env:
-          QT_HOST_PATH: "$HOME/Qt/${{ env.QT_VERSION }}/${{ env.QT_HOST_KIT }}"
-          QT_ANDROID_PATH: "$HOME/Qt/${{ env.QT_VERSION }}/${{ env.QT_ANDROID_KIT }}"
         run: |
+          # Ensure these expand in-shell so Toolchain.cmake sees a real path
+          export QT_HOST_PATH="$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}"
+          export QT_ANDROID_PATH="$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}"
+          echo "QT_HOST_PATH=${QT_HOST_PATH}"
+          echo "QT_ANDROID_PATH=${QT_ANDROID_PATH}"
+
           cmake -S . -B "${BUILD_DIR}" -G Ninja \
             -D CMAKE_BUILD_TYPE=Release \
             -D ANDROID=ON \
