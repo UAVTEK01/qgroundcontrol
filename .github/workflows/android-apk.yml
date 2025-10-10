@@ -2,13 +2,40 @@ name: Android APK (manual)
 
 on:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or tag to build (e.g. master, feat/stabilizer, v4.5.10)"
+        required: true
+        default: "master"
+      abis:
+        description: "Android ABIs"
+        required: true
+        default: "arm64-v8a"
+      qt_version:
+        description: "Qt version"
+        required: true
+        default: "5.15.2"
+      ndk_version:
+        description: "Android NDK version"
+        required: true
+        default: "21.3.6528147"
+      sdk_platform:
+        description: "Android SDK platform"
+        required: true
+        default: "android-30"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   build-android:
     runs-on: ubuntu-22.04
 
-    # Keep a stable local SDK directory so we can cache it
     env:
       ANDROID_SDK_ROOT: ${{ github.workspace }}/Android
 
@@ -16,11 +43,13 @@ jobs:
       - name: Checkout (with submodules) at ref
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          # Use manual input if provided, else fall back to the triggering ref or repo default
+          ref: ${{ github.event.inputs.ref || github.ref_name || github.event.repository.default_branch }}
           submodules: recursive
+          fetch-depth: 0
 
       #####################################################################
-      # 1) Use Java 17 BEFORE installing Android SDK so sdkmanager works
+      # 1) Java 17 BEFORE Android SDK so sdkmanager works
       #####################################################################
       - name: Set up Java 17 (for sdkmanager)
         uses: actions/setup-java@v4
@@ -28,7 +57,6 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # Optional: Cache the SDK directory to speed up subsequent runs
       - name: Cache Android SDK
         uses: actions/cache@v4
         with:
@@ -37,15 +65,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-android-
 
-      - name: Install Android SDK + NDK (cmdline-tools)
+      - name: Install Android cmdline-tools
         uses: android-actions/setup-android@v3
 
       - name: Install SDK components + accept licenses
         env:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
-          JAVA_HOME: ${{ env.JAVA_HOME }}   # from setup-java (JDK 17)
-          PATH: ${{ env.JAVA_HOME }}/bin:${{ env.PATH }}
         run: |
+          # Ensure JAVA 17 is used for sdkmanager without clobbering PATH
+          export PATH="$JAVA_HOME/bin:$PATH"
+
           mkdir -p "$ANDROID_SDK_ROOT"
           sdkmanager --sdk_root="$ANDROID_SDK_ROOT" \
             "platform-tools" \
@@ -56,7 +85,7 @@ jobs:
           yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses
 
       #####################################################################
-      # 2) Switch to Java 11 for Qt 5.15.2 / Gradle build compatibility
+      # 2) Switch to Java 11 for Qt5/Gradle compatibility
       #####################################################################
       - name: Switch to Java 11 (for Qt5/Gradle)
         uses: actions/setup-java@v4
@@ -75,11 +104,11 @@ jobs:
           host: linux
           target: android
           cache: true
-          # Add modules if your project needs them, e.g.:
+          # add modules if needed, e.g.:
           # modules: qtimageformats
 
       #####################################################################
-      # 4) Configure & Build (qmake)
+      # 4) Configure & Build via qmake/make
       #####################################################################
       - name: Configure (qmake)
         env:
@@ -87,7 +116,7 @@ jobs:
         run: |
           mkdir -p build-android
           pushd build-android
-          ${HOME}/Qt/${{ inputs.qt_version }}/android/bin/qmake -r ../qgroundcontrol.pro -spec android-clang \
+          "${HOME}/Qt/${{ inputs.qt_version }}/android/bin/qmake" -r ../qgroundcontrol.pro -spec android-clang \
             CONFIG+=release ANDROID_ABIS="${{ inputs.abis }}"
           popd
 
@@ -98,23 +127,23 @@ jobs:
           popd
 
       #####################################################################
-      # 5) Package APK (Gradle)
+      # 5) Package APK via Gradle
       #####################################################################
-      - name: Package APK
+      - name: Package APK (assembleRelease)
         env:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
-          JAVA_HOME: ${{ env.JAVA_HOME }}   # now JDK 11
-          PATH: ${{ env.JAVA_HOME }}/bin:${{ env.PATH }}
         run: |
+          # Ensure Java 11 on PATH for Gradle/AGP used by Qt 5 android template
+          export PATH="$JAVA_HOME/bin:$PATH"
           pushd build-android/android-build
           ./gradlew --no-daemon --warning-mode=all assembleRelease
           popd
 
       #####################################################################
-      # 6) Upload artifact
+      # 6) Upload artifact(s)
       #####################################################################
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: qgc-apk-${{ inputs.ref }}
+          name: qgc-apk-${{ github.event.inputs.ref || github.ref_name }}
           path: build-android/android-build/app/build/outputs/apk/release/*.apk
