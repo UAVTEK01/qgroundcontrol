@@ -17,7 +17,7 @@ jobs:
       BUILD_DIR: build-android
       QT_HOST_KIT: "gcc_64"
       QT_ANDROID_KIT: "android_arm64_v8a"
-      QT_BASE_URL: "https://download.qt.io"   # use official mirror root
+      QT_BASE_URL: "https://download.qt.io"   # pin to official mirror
 
     steps:
       - name: Checkout (with submodules)
@@ -53,7 +53,7 @@ jobs:
       - name: Install Qt 6.6.3 (host + Android kits)
         run: |
           mkdir -p $HOME/Qt
-          # Desktop kit (includes qttools module already)
+          # Desktop kit (includes qttools module already). Retry to handle transient mirror hiccups.
           for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux desktop ${QT_VERSION} ${QT_HOST_KIT} --outputdir $HOME/Qt && break || sleep 10; done
           # Android kit
           for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux android  ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt && break || sleep 10; done
@@ -66,6 +66,7 @@ jobs:
           echo "NDK_ROOT=$NDK_ROOT"
           echo "Qt host: $HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}"
           echo "Qt android: $HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}"
+          $HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}/bin/qt-cmake --version || true
           cmake --version || true
           ninja --version || true
           ls -la "$HOME/Qt/${QT_VERSION}" || true
@@ -87,20 +88,26 @@ jobs:
             -D CMAKE_FIND_ROOT_PATH="${QT_ANDROID_PATH}" \
             -D CMAKE_PREFIX_PATH="${QT_ANDROID_PATH};${QT_HOST_PATH}"
 
-      - name: Build
-        run: cmake --build "${BUILD_DIR}" --config Release
-
-      - name: Package APK
+      - name: Build (verbose)
         run: |
-          cmake --build "${BUILD_DIR}" --target apk || true
-          echo "🔍 Searching for generated APKs..."
-          find "${BUILD_DIR}" -name "*.apk" -print || true
+          cmake --build "${BUILD_DIR}" --config Release -- -v
 
-      - name: Upload APK artifact
+      - name: Package APK & list outputs
+        run: |
+          # Try CMake's 'apk' target if present
+          cmake --build "${BUILD_DIR}" --target apk || true
+          echo "🔍 Searching for APK/AAB outputs..."
+          # androiddeployqt often creates an android-build/ directory
+          find "${BUILD_DIR}" -type d -iname "android-build" -print || true
+          find "${BUILD_DIR}" -name "*.apk" -print || true
+          find "${BUILD_DIR}" -name "*.aab" -print || true
+
+      - name: Upload APK/AAB artifacts
         uses: actions/upload-artifact@v4
         with:
           name: qgroundcontrol-android
           path: |
+            ${BUILD_DIR}/**/android-build/**/*.apk
             ${BUILD_DIR}/**/*.apk
             ${BUILD_DIR}/**/*.aab
           if-no-files-found: warn
