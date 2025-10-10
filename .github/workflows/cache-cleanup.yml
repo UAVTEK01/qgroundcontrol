@@ -1,9 +1,7 @@
 name: cleanup-branch-caches
 on:
-  pull_request_target:
-    types:
-      - closed
   workflow_dispatch:
+
 
 jobs:
   cleanup:
