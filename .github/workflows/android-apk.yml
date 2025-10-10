@@ -38,41 +38,39 @@ jobs:
           python -m pip install --upgrade pip
           pip install aqtinstall==3.3.0
 
+      # Use the preinstalled cmdline-tools' sdkmanager, but install INTO our local SDK root
       - name: Install Android SDK + NDK
         env:
           ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
         run: |
           set -e
           mkdir -p "$ANDROID_SDK_ROOT"
-          # Accept licenses using the preinstalled cmdline-tools, then install into our local SDK root
-          yes | sudo /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" \
+          SDKMGR="/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager"
+
+          yes | "$SDKMGR" --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
+          "$SDKMGR" --sdk_root="$ANDROID_SDK_ROOT" \
             "platforms;android-${{ env.ANDROID_API }}" \
             "build-tools;34.0.0" \
             "platform-tools" \
             "ndk;${{ env.ANDROID_NDK_VERSION }}"
+
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "NDK_ROOT=$ANDROID_SDK_ROOT/ndk/${{ env.ANDROID_NDK_VERSION }}" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${{ env.ANDROID_NDK_VERSION }}" >> $GITHUB_ENV
 
       - name: Install Qt (host + android)
-        env:
-          QT_VERSION: ${{ env.QT_VERSION }}
-          QT_HOST_KIT: ${{ env.QT_HOST_KIT }}
-          QT_ANDROID_KIT: ${{ env.QT_ANDROID_KIT }}
         run: |
           set -e
           mkdir -p "$HOME/Qt"
 
-          # Host Qt (no extra modules; avoid the 'qttools not found' error you hit)
-          aqt install-qt linux desktop "$QT_VERSION" "$QT_HOST_KIT" --outputdir "$HOME/Qt"
+          # Host Qt
+          aqt install-qt linux desktop "${QT_VERSION}" "${QT_HOST_KIT}" --outputdir "$HOME/Qt"
 
-          # Android Qt (modules needed by QGC)
-          aqt install-qt linux android "$QT_VERSION" "$QT_ANDROID_KIT" --outputdir "$HOME/Qt" \
+          # Android Qt (modules commonly required by QGC)
+          aqt install-qt linux android "${QT_VERSION}" "${QT_ANDROID_KIT}" --outputdir "$HOME/Qt" \
             -m qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat
 
-          # Export fully-expanded paths for later steps
           echo "QT_HOST_PATH=$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}" >> $GITHUB_ENV
           echo "QT_ANDROID_PATH=$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}" >> $GITHUB_ENV
 
@@ -89,6 +87,10 @@ jobs:
           set -e
           echo "QT_HOST_PATH=${QT_HOST_PATH}"
           echo "QT_ANDROID_PATH=${QT_ANDROID_PATH}"
+          # Sanity: show that Qt bins exist
+          ls -la "${QT_HOST_PATH}/bin" || true
+          ls -la "${QT_ANDROID_PATH}/bin" || true
+
           cmake -S . -B "${BUILD_DIR}" -G Ninja \
             -D CMAKE_BUILD_TYPE=Release \
             -D ANDROID=ON \
@@ -102,7 +104,7 @@ jobs:
             -D CMAKE_PREFIX_PATH="${QT_ANDROID_PATH};${QT_HOST_PATH}"
 
       - name: Build (Ninja)
-        run: ninja -C "${{ env.BUILD_DIR }}"
+        run: ninja -C "${BUILD_DIR}"
 
-      - name: Package (placeholder)
-        run: echo "Add packaging here if needed"
+      - name: Package APK/AAB (placeholder)
+        run: echo "Packaging placeholder"
