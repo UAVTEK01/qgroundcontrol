@@ -1,7 +1,7 @@
 name: Android APK (Manual Build)
 
 on:
-  workflow_dispatch:  # Only runs when you click “Run workflow” in GitHub
+  workflow_dispatch:  # Only runs when you click “Run workflow”
 
 jobs:
   build-android:
@@ -27,7 +27,7 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install dependencies
+      - name: Install build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build python3-pip unzip zip lld ccache
@@ -46,13 +46,20 @@ jobs:
             "build-tools;34.0.0" \
             "ndk;${ANDROID_NDK_VERSION}"
 
-      - name: Install Qt (host + android)
+      - name: Install Qt (host + android with required modules)
         run: |
+          set -e
           mkdir -p $HOME/Qt
-          aqt install-qt linux desktop ${QT_VERSION} ${QT_HOST_KIT} --outputdir $HOME/Qt
-          aqt install-qt linux android ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt
 
-      - name: Configure CMake
+          # Host Qt (tools like uic/lrelease live here)
+          aqt install-qt linux desktop ${QT_VERSION} ${QT_HOST_KIT} --outputdir $HOME/Qt \
+            -m qttools
+
+          # Android Qt (modules QGC needs)
+          aqt install-qt linux android ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt \
+            -m qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat
+
+      - name: Configure (CMake)
         run: |
           set -e
           export QT_HOST_PATH="$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}"
@@ -60,6 +67,11 @@ jobs:
           echo "QT_HOST_PATH=${QT_HOST_PATH}"
           echo "QT_ANDROID_PATH=${QT_ANDROID_PATH}"
 
+          # Quick sanity: show what was installed
+          ls -la "${QT_HOST_PATH}/bin" || true
+          ls -la "${QT_ANDROID_PATH}/lib/cmake" || true
+
+          set -o pipefail
           cmake -S . -B "${BUILD_DIR}" -G Ninja \
             -D CMAKE_BUILD_TYPE=Release \
             -D ANDROID=ON \
@@ -70,7 +82,16 @@ jobs:
             -D QT_HOST_PATH="${QT_HOST_PATH}" \
             -D CMAKE_TOOLCHAIN_FILE="${NDK_ROOT}/build/cmake/android.toolchain.cmake" \
             -D CMAKE_FIND_ROOT_PATH="${QT_ANDROID_PATH}" \
-            -D CMAKE_PREFIX_PATH="${QT_ANDROID_PATH};${QT_HOST_PATH}"
+            -D CMAKE_PREFIX_PATH="${QT_ANDROID_PATH};${QT_HOST_PATH}" \
+            2>&1 | tee configure.log
+          STATUS=${PIPESTATUS[0]}
+          if [ $STATUS -ne 0 ]; then
+            echo "------ CMakeError.log ------" || true
+            cat "${BUILD_DIR}/CMakeFiles/CMakeError.log" || true
+            echo "------ tail CMakeOutput.log ------" || true
+            tail -n 200 "${BUILD_DIR}/CMakeFiles/CMakeOutput.log" || true
+            exit $STATUS
+          fi
 
       - name: Build
         run: |
@@ -81,6 +102,7 @@ jobs:
           cmake --build "${BUILD_DIR}" --target apk
           echo "APK outputs:"
           find "${BUILD_DIR}" -type f -name "*.apk" -print
+          find "${BUILD_DIR}" -type f -name "*.aab" -print
 
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
