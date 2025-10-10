@@ -2,27 +2,7 @@ name: Android APK (manual)
 
 on:
   workflow_dispatch:
-    inputs:
-      ref:
-        description: "Branch or tag to build (e.g. main, feat/stabilizer, v4.5.10)"
-        required: true
-        default: "main"
-      abis:
-        description: "Android ABIs"
-        required: true
-        default: "arm64-v8a"
-      qt_version:
-        description: "Qt version"
-        required: true
-        default: "5.15.2"
-      ndk_version:
-        description: "Android NDK version"
-        required: true
-        default: "21.3.6528147"
-      sdk_platform:
-        description: "Android SDK platform"
-        required: true
-        default: "android-30"
+
 
 jobs:
   build-android:
