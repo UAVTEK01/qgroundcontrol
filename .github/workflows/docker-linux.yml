@@ -1,22 +1,7 @@
 name: Docker-Linux
 
 on:
-  push:
-    branches:
-      - master
-      - 'Stable*'
-    tags:
-      - 'v*'
-    paths-ignore:
-      - 'docs/**'
-  pull_request:
-    paths:
-      - '.github/workflows/docker-linux.yml'
-      - 'deploy/docker/**'
-      - 'deploy/linux/**'
-      - 'src/**'
-      - 'CMakeLists.txt'
-      - 'cmake/**'
+  workflow_dispatch:
 
 # concurrency:
 #   group: ${{ github.workflow }}-${{ github.ref }}
