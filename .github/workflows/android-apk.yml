@@ -34,17 +34,19 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build python3-pip unzip zip
+          sudo apt-get install -y ninja-build python3-pip unzip zip curl
           python3 -m pip install --upgrade "aqtinstall>=3.3.0"
 
       - name: Install Android SDK + NDK r25c
         run: |
+          set -e
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
           curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o cmdtools.zip
           unzip -q cmdtools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
           mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses
-          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" \
             "platform-tools" \
             "platforms;android-${ANDROID_API}" \
             "build-tools;34.0.0" \
@@ -52,12 +54,12 @@ jobs:
 
       - name: Install Qt 6.6.3 (host + Android kits)
         run: |
+          set -e
           mkdir -p $HOME/Qt
-          # Desktop kit (includes qttools module already). Retry to handle transient mirror hiccups.
+          # Desktop kit
           for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux desktop ${QT_VERSION} ${QT_HOST_KIT} --outputdir $HOME/Qt && break || sleep 10; done
           # Android kit
-          for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux android  ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt && break || sleep 10; done
-        # -> $HOME/Qt/6.6.3/gcc_64 and $HOME/Qt/6.6.3/android_arm64_v8a
+          for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux android ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt && break || sleep 10; done
 
       - name: Print env & key paths (diagnostics)
         run: |
@@ -66,19 +68,23 @@ jobs:
           echo "NDK_ROOT=$NDK_ROOT"
           echo "Qt host: $HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}"
           echo "Qt android: $HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}"
-          $HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}/bin/qt-cmake --version || true
           cmake --version || true
           ninja --version || true
           ls -la "$HOME/Qt/${QT_VERSION}" || true
+          ls -la "$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}/bin" || true
+          ls -la "$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}/bin" || true
 
       - name: Configure CMake (Android arm64-v8a)
         run: |
-          # Ensure these expand in-shell so Toolchain.cmake sees a real path
+          set -e
+          # Ensure these expand in-shell so Toolchain.cmake sees real paths
           export QT_HOST_PATH="$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}"
           export QT_ANDROID_PATH="$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}"
           echo "QT_HOST_PATH=${QT_HOST_PATH}"
           echo "QT_ANDROID_PATH=${QT_ANDROID_PATH}"
 
+          # Run configure and, on failure, dump detailed logs
+          set -o pipefail
           cmake -S . -B "${BUILD_DIR}" -G Ninja \
             -D CMAKE_BUILD_TYPE=Release \
             -D ANDROID=ON \
@@ -89,7 +95,16 @@ jobs:
             -D QT_HOST_PATH="${QT_HOST_PATH}" \
             -D CMAKE_TOOLCHAIN_FILE="${NDK_ROOT}/build/cmake/android.toolchain.cmake" \
             -D CMAKE_FIND_ROOT_PATH="${QT_ANDROID_PATH}" \
-            -D CMAKE_PREFIX_PATH="${QT_ANDROID_PATH};${QT_HOST_PATH}"
+            -D CMAKE_PREFIX_PATH="${QT_ANDROID_PATH};${QT_HOST_PATH}" \
+            2>&1 | tee configure.log
+          STATUS=${PIPESTATUS[0]}
+          if [ $STATUS -ne 0 ]; then
+            echo "------ CMakeError.log ------" || true
+            cat "${BUILD_DIR}/CMakeFiles/CMakeError.log" || true
+            echo "------ tail CMakeOutput.log ------" || true
+            tail -n 200 "${BUILD_DIR}/CMakeFiles/CMakeOutput.log" || true
+            exit $STATUS
+          fi
 
       - name: Build (verbose)
         run: |
@@ -97,10 +112,8 @@ jobs:
 
       - name: Package APK & list outputs
         run: |
-          # Try CMake's 'apk' target if present
           cmake --build "${BUILD_DIR}" --target apk || true
-          echo "🔍 Searching for APK/AAB outputs..."
-          # androiddeployqt often creates an android-build/ directory
+          echo "Searching for APK/AAB outputs..."
           find "${BUILD_DIR}" -type d -iname "android-build" -print || true
           find "${BUILD_DIR}" -name "*.apk" -print || true
           find "${BUILD_DIR}" -name "*.aab" -print || true
