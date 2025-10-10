@@ -1,17 +1,13 @@
-name: Android APK (Qt 6.6.3, arm64-v8a)
+name: Android APK (Manual, Qt 6.6.3)
 
 on:
-  workflow_dispatch:
-  push:
-    branches: [ main, master ]
-  pull_request:
+  workflow_dispatch:    # manual trigger only
 
 jobs:
   build-android:
     runs-on: ubuntu-22.04
 
     env:
-      # Align with QGC upstream
       QT_VERSION: "6.6.3"
       ANDROID_API: "33"
       ANDROID_NDK_VERSION: "25.2.9519653"     # r25c (Qt 6.6.x recommended)
@@ -21,6 +17,7 @@ jobs:
       BUILD_DIR: build-android
       QT_HOST_KIT: "gcc_64"
       QT_ANDROID_KIT: "android_arm64_v8a"
+      QT_BASE_URL: "https://download.qt.io"   # use official mirror root
 
     steps:
       - name: Checkout (with submodules)
@@ -38,7 +35,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build python3-pip unzip zip
-          python3 -m pip install --upgrade "aqtinstall>=3.2.0"
+          python3 -m pip install --upgrade "aqtinstall>=3.3.0"
 
       - name: Install Android SDK + NDK r25c
         run: |
@@ -56,9 +53,10 @@ jobs:
       - name: Install Qt 6.6.3 (host + Android kits)
         run: |
           mkdir -p $HOME/Qt
-          aqt install-qt linux desktop ${QT_VERSION} ${QT_HOST_KIT} --outputdir $HOME/Qt
-          aqt install-qt linux android  ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt
-          aqt install-tool linux desktop ${QT_VERSION} qttools --outputdir $HOME/Qt
+          # Desktop kit (includes qttools module already)
+          for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux desktop ${QT_VERSION} ${QT_HOST_KIT} --outputdir $HOME/Qt && break || sleep 10; done
+          # Android kit
+          for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux android  ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt && break || sleep 10; done
         # -> $HOME/Qt/6.6.3/gcc_64 and $HOME/Qt/6.6.3/android_arm64_v8a
 
       - name: Print env & key paths (diagnostics)
@@ -95,9 +93,10 @@ jobs:
       - name: Package APK
         run: |
           cmake --build "${BUILD_DIR}" --target apk || true
+          echo "🔍 Searching for generated APKs..."
           find "${BUILD_DIR}" -name "*.apk" -print || true
 
-      - name: Upload APK/AAB artifacts
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: qgroundcontrol-android
