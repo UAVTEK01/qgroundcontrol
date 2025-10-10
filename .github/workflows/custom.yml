@@ -1,23 +1,6 @@
 name: Custom build
-
 on:
-  push:
-    branches:
-      - master
-      - Stable*
-    tags:
-      - v*
-    paths-ignore:
-      - docs/**
-  pull_request:
-    paths:
-      - .github/workflows/windows.yml
-      - deploy/windows/**
-      - src/**
-      - custom-example/**
-      - CMakeLists.txt
-      - cmake/**
-      - tools/setup/*windows*
+  workflow_dispatch:
 
 # concurrency:
 #   group: ${{ github.workflow }}-${{ github.ref }}
