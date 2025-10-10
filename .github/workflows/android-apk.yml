@@ -1,7 +1,10 @@
-name: Android (Manual)
+name: Android CI
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
   android-build:
@@ -11,14 +14,16 @@ jobs:
       QT_VERSION: 6.6.3
       ANDROID_API: 33
       ANDROID_NDK_VERSION: 25.2.9519653
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+      ANDROID_HOME: ${{ github.workspace }}/android-sdk
+      NDK_ROOT: ${{ github.workspace }}/android-sdk/ndk/25.2.9519653
       BUILD_DIR: build-android
       QT_HOST_KIT: gcc_64
       QT_ANDROID_KIT: android_arm64_v8a
       QT_BASE_URL: https://download.qt.io
-
-      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
-      ANDROID_HOME:      ${{ github.workspace }}/android-sdk
-      NDK_ROOT:          ${{ github.workspace }}/android-sdk/ndk/25.2.9519653
+      JAVA_HOME: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.16-8/x64
+      JAVA_HOME_17_X64: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.16-8/x64
+      # IMPORTANT: Do NOT set QT_HOST_PATH or QT_ANDROID_PATH here (they would contain a literal $HOME)
 
     steps:
       - name: Checkout
@@ -26,74 +31,60 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - name: Set up Python
+      - name: Set up Python (for aqtinstall)
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
-      - name: Install build deps
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y ninja-build ccache lld unzip
-
-      - name: Install aqtinstall
+      - name: Install aqtinstall and deps
         run: |
           python -m pip install --upgrade pip
-          pip install "aqtinstall>=3.3.0"
+          pip install aqtinstall==3.* setuptools wheel
 
-      - name: Install Android SDK/NDK cmdline-tools
+      - name: Prepare Android SDK/NDK
         run: |
           set -e
           mkdir -p "${ANDROID_SDK_ROOT}"
-          curl -L -o cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
-          unzip -q cmdline-tools.zip -d "${ANDROID_SDK_ROOT}/cmdline-tools"
-          mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools" "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
-          yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --sdk_root="${ANDROID_SDK_ROOT}" \
-              "platform-tools" \
-              "platforms;android-${ANDROID_API}" \
-              "build-tools;34.0.0" \
-              "ndk;${ANDROID_NDK_VERSION}"
+          sdkmanager_bin="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$sdkmanager_bin" ]; then
+            mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
+            curl -sSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o /tmp/clt.zip
+            unzip -q /tmp/clt.zip -d "${ANDROID_SDK_ROOT}/cmdline-tools"
+            mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools" "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
+          fi
+          yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses
+          "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "platforms;android-${ANDROID_API}" \
+            "build-tools;34.0.0" \
+            "ndk;${ANDROID_NDK_VERSION}"
+          # Ensure NDK_ROOT points to the installed NDK
+          echo "NDK_ROOT=${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
 
-      - name: Install Qt (desktop + android)
-        env:
-          AQT_ARCHIVES_MIRROR: ${{ env.QT_BASE_URL }}
+      - name: Install Qt (host + android)
         run: |
           set -e
-          mkdir -p $HOME/Qt
-          # Desktop (host) Qt
-          aqt install-qt linux desktop ${QT_VERSION} ${QT_HOST_KIT} --outputdir $HOME/Qt
-          # Android (target) Qt
-          aqt install-qt linux android ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt
+          # Host (Linux) kit
+          python -m aqt install-qt linux desktop "${QT_VERSION}" "${QT_HOST_KIT}" -O "$HOME/Qt" --base "${QT_BASE_URL}"
+          # Android kit (arm64)
+          python -m aqt install-qt linux android "${QT_VERSION}" "${QT_ANDROID_KIT}" -O "$HOME/Qt" --base "${QT_BASE_URL}"
+          # Basic sanity
+          ls -la "$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}/bin" || true
+          ls -la "$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}/bin" || true
 
-      - name: Show Qt layout
-        run: |
-          echo "Host Qt path:   $HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}"
-          echo "Android Qt path:$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}"
-          ls -la $HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}/bin | head -n 50
-          ls -la $HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}/bin | head -n 50
-
-      - name: Configure (CMake)
-        env:
-          # Ensure these expand to real paths for Toolchain.cmake checks
-          QT_HOST_PATH: $HOME/Qt/${{ env.QT_VERSION }}/${{ env.QT_HOST_KIT }}
-          QT_ANDROID_PATH: $HOME/Qt/${{ env.QT_VERSION }}/${{ env.QT_ANDROID_KIT }}
-          ANDROID_NDK_HOME: ${{ env.NDK_ROOT }}
+      - name: Configure with CMake (Android)
         run: |
           set -e
+          # Compute these IN THE SHELL so $HOME expands
+          export QT_HOST_PATH="$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}"
+          export QT_ANDROID_PATH="$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}"
           echo "QT_HOST_PATH=${QT_HOST_PATH}"
           echo "QT_ANDROID_PATH=${QT_ANDROID_PATH}"
-
-          # Helpful sanity checks
-          test -x "${QT_HOST_PATH}/bin/qmake6" || ls -la "${QT_HOST_PATH}/bin" || true
-          test -x "${QT_ANDROID_PATH}/bin/qmake6" || ls -la "${QT_ANDROID_PATH}/bin" || true
-          test -d "${ANDROID_SDK_ROOT}" && test -d "${NDK_ROOT}" || (echo "SDK/NDK missing"; exit 1)
+          # Quick checks
+          test -d "${QT_HOST_PATH}" || (echo "Missing QT_HOST_PATH"; exit 1)
+          test -d "${QT_ANDROID_PATH}" || (echo "Missing QT_ANDROID_PATH"; exit 1)
+          test -d "${ANDROID_SDK_ROOT}" || (echo "Missing ANDROID_SDK_ROOT"; exit 1)
+          test -d "${NDK_ROOT}" || (echo "Missing NDK_ROOT"; exit 1)
 
           set -o pipefail
           cmake -S . -B "${BUILD_DIR}" -G Ninja \
@@ -108,30 +99,21 @@ jobs:
             -D CMAKE_FIND_ROOT_PATH="${QT_ANDROID_PATH}" \
             -D CMAKE_PREFIX_PATH="${QT_ANDROID_PATH};${QT_HOST_PATH}" \
             2>&1 | tee configure.log
-          STATUS=${PIPESTATUS[0]}
-          if [ $STATUS -ne 0 ]; then
-            echo "------ CMakeError.log ------" || true
-            cat "${BUILD_DIR}/CMakeFiles/CMakeError.log" || true
-            echo "------ tail CMakeOutput.log ------" || true
-            tail -n 200 "${BUILD_DIR}/CMakeFiles/CMakeOutput.log" || true
-            exit $STATUS
-          fi
 
       - name: Build
         run: |
           cmake --build "${BUILD_DIR}" --parallel
 
-      - name: Package (APK)
+      - name: Package APK
         run: |
           cmake --build "${BUILD_DIR}" --target apk
-          echo "Artifacts in ${BUILD_DIR}/android-build"
-          find "${BUILD_DIR}" -maxdepth 3 -type f \( -name "*.apk" -o -name "*.aab" \) -print
 
-      - name: Upload APKs
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: qgc-android-apks
+          name: qgc-android-artifacts
           path: |
-            ${BUILD_DIR}/**/*.apk
-            ${BUILD_DIR}/**/*.aab
+            build-android/*.apk
+            build-android/**/*.apk
+            build-android/configure.log
           if-no-files-found: warn
