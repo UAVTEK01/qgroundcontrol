@@ -1,176 +1,142 @@
-name: Android APK (manual)
+name: Android APK (Qt 6.8.3, arm64-v8a)
 
 on:
   workflow_dispatch:
-    inputs:
-      ref:
-        description: "Branch or tag to build (e.g. master, feat/stabilizer, v4.5.10)"
-        required: true
-        default: "master"
-      abis:
-        description: "Android ABIs"
-        required: true
-        default: "arm64-v8a"
-      qt_version:
-        description: "Qt version"
-        required: true
-        default: "5.15.2"
-      ndk_version:
-        description: "Android NDK version"
-        required: true
-        default: "21.3.6528147"
-      sdk_platform:
-        description: "Android SDK platform"
-        required: true
-        default: "android-30"
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-defaults:
-  run:
-    shell: bash
+  push:
+    branches: [ main, master ]
+  pull_request:
 
 jobs:
   build-android:
     runs-on: ubuntu-22.04
 
     env:
-      ANDROID_SDK_ROOT: ${{ github.workspace }}/Android
+      # Versions
+      QT_VERSION: "6.8.3"
+      ANDROID_API: "34"
+      ANDROID_NDK_VERSION: "26.3.11579264"   # r26c (Qt 6.8.x compatible)
+      # Paths
+      ANDROID_SDK_ROOT: "${{ github.workspace }}/android-sdk"
+      ANDROID_HOME: "${{ github.workspace }}/android-sdk"
+      NDK_ROOT: "${{ github.workspace }}/android-sdk/ndk/26.3.11579264"
+      BUILD_DIR: build-android
+      # Qt target kit
+      QT_HOST_KIT: "gcc_64"
+      QT_ANDROID_KIT: "android_arm64_v8a"
+      # Output toggles
+      MAKE_AAB: "OFF"   # set to ON if you want .aab too
 
     steps:
-      - name: Checkout (with submodules) at ref
+      - name: Checkout (with submodules)
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref || github.ref_name || github.event.repository.default_branch }}
           submodules: recursive
-          fetch-depth: 0
 
-      # 1) Java 17 BEFORE Android SDK so sdkmanager works
-      - name: Set up Java 17 (for sdkmanager)
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Cache Android SDK
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.ANDROID_SDK_ROOT }}
-          key: ${{ runner.os }}-android-${{ inputs.sdk_platform }}-ndk-${{ inputs.ndk_version }}
-          restore-keys: |
-            ${{ runner.os }}-android-
-
-      - name: Install Android cmdline-tools
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK components + accept licenses (robust)
-        env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+      - name: Install build tools
         run: |
-          export PATH="$JAVA_HOME/bin:$PATH"
-          mkdir -p "$ANDROID_SDK_ROOT"
+          sudo apt-get update
+          sudo apt-get install -y ninja-build python3-pip unzip zip
+          python3 -m pip install --upgrade aqtinstall==3.1.7
 
-          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" \
+      - name: Install Android SDK + NDK
+        run: |
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o cmdtools.zip
+          unzip -q cmdtools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
+          mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
             "platform-tools" \
-            "platforms;${{ inputs.sdk_platform }}" \
-            "build-tools;30.0.3" \
-            "ndk;${{ inputs.ndk_version }}" \
-            "cmdline-tools;latest"
+            "platforms;android-${ANDROID_API}" \
+            "build-tools;34.0.0" \
+            "ndk;${ANDROID_NDK_VERSION}"
 
-          # Avoid failing the step when 'yes' gets SIGPIPE after sdkmanager exits.
-          set +o pipefail
-          yes 2>/dev/null | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null || true
-          set -o pipefail
-
-      # 2) Switch to Java 11 for Qt5/Gradle compatibility
-      - name: Switch to Java 11 (for Qt5/Gradle)
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "11"
-          cache: gradle
-
-      # 3) Install Qt 5.x (Android target) — qmake flow
-      - name: Install Qt (with Android)
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: ${{ inputs.qt_version }}
-          host: linux
-          target: android
-          arch: android_${{ inputs.abis }}     # e.g. android_arm64-v8a
-          cache: true
-          setup-qmake: true                    # <- puts qmake on PATH
-          # modules: qtimageformats
-
-      # Verify qmake and fall back to discovery if needed
-      - name: Ensure qmake is available
+      - name: Install Qt (host + Android kits)
         run: |
-          set -e
-          echo "Checking qmake on PATH..."
-          if command -v qmake >/dev/null 2>&1; then
-            echo "QMAKE=$(command -v qmake)" >> "$GITHUB_ENV"
-            echo "Found qmake on PATH: $(command -v qmake)"
-            qmake -query || true
-            exit 0
-          fi
+          mkdir -p $HOME/Qt
+          aqt install-qt linux desktop ${QT_VERSION} ${QT_HOST_KIT} --outputdir $HOME/Qt
+          aqt install-qt linux android ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt
+          aqt install-tool linux desktop ${QT_VERSION} qttools --outputdir $HOME/Qt
+        # Result:
+        #   $HOME/Qt/${QT_VERSION}/gcc_64
+        #   $HOME/Qt/${QT_VERSION}/android_arm64_v8a
 
-          echo "qmake not on PATH. Attempting discovery..."
-          SEARCH_DIRS=(
-            "$RUNNER_TEMP/Qt"
-            "$RUNNER_WORKSPACE/Qt"
-            "$HOME/Qt"
-            "/opt/hostedtoolcache"
-            "$RUNNER_TEMP"
-          )
-          FOUND=""
-          for D in "${SEARCH_DIRS[@]}"; do
-            [ -d "$D" ] || continue
-            FOUND=$(find "$D" -maxdepth 8 -type f -name qmake 2>/dev/null | head -n 1 || true)
-            [ -n "$FOUND" ] && break
-          done
+      - name: Print env & key paths (diagnostics)
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "NDK_ROOT=$NDK_ROOT"
+          echo "Qt host: $HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}"
+          echo "Qt android: $HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}"
+          which cmake || true
+          cmake --version || true
+          ninja --version || true
+          ls -la "$HOME/Qt/${QT_VERSION}" || true
+          find "$HOME/Qt/${QT_VERSION}" -maxdepth 2 -type d -name "android_*" -print || true
 
-          if [ -z "$FOUND" ]; then
-            echo "ERROR: qmake not found after install." >&2
-            echo "Searched: ${SEARCH_DIRS[*]}"
-            exit 1
-          fi
-
-          echo "Found qmake at: $FOUND"
-          echo "QMAKE=$FOUND" >> "$GITHUB_ENV"
-          "$FOUND" -query || true
-
-      # 4) Configure & Build via qmake/make
-      - name: Configure (qmake)
+      - name: Configure CMake (Android arm64-v8a)
         env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+          QT_HOST_PATH: "$HOME/Qt/${{ env.QT_VERSION }}/${{ env.QT_HOST_KIT }}"
+          QT_ANDROID_PATH: "$HOME/Qt/${{ env.QT_VERSION }}/${{ env.QT_ANDROID_KIT }}"
         run: |
-          mkdir -p build-android
-          pushd build-android
-          "${QMAKE:-qmake}" -r ../qgroundcontrol.pro -spec android-clang \
-            CONFIG+=release ANDROID_ABIS="${{ inputs.abis }}"
-          popd
+          cmake -S . -B "${BUILD_DIR}" -G Ninja \
+            -D CMAKE_BUILD_TYPE=Release \
+            -D ANDROID=ON \
+            -D ANDROID_ABI=arm64-v8a \
+            -D ANDROID_PLATFORM=android-${ANDROID_API} \
+            -D ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT}" \
+            -D ANDROID_NDK_ROOT="${NDK_ROOT}" \
+            -D QT_HOST_PATH="${QT_HOST_PATH}" \
+            -D CMAKE_TOOLCHAIN_FILE="${NDK_ROOT}/build/cmake/android.toolchain.cmake" \
+            -D CMAKE_FIND_ROOT_PATH="${QT_ANDROID_PATH}" \
+            -D CMAKE_PREFIX_PATH="${QT_ANDROID_PATH};${QT_HOST_PATH}"
 
       - name: Build
-        run: |
-          pushd build-android
-          make -j"$(nproc)"
-          popd
+        run: cmake --build "${BUILD_DIR}" --config Release
 
-      # 5) Package APK via Gradle
-      - name: Package APK (assembleRelease)
-        env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+      - name: Package APK (Qt androiddeployqt path)
         run: |
-          export PATH="$JAVA_HOME/bin:$PATH"   # Ensure Java 11 on PATH for Gradle
-          pushd build-android/android-build
-          ./gradlew --no-daemon --warning-mode=all assembleRelease
-          popd
+          cmake --build "${BUILD_DIR}" --target apk || true
+          echo "Looking for APKs produced by androiddeployqt..."
+          find "${BUILD_DIR}" -name "*.apk" -print || true
 
-      # 6) Upload artifact(s)
-      - name: Upload APK
+      - name: Upload APK/AAB artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: qgc-apk-${{ github.event.inputs.ref || github.ref_name }}
-          path: build-android/android-build/app/build/outputs/apk/release/*.apk
+          name: qgroundcontrol-android
+          path: |
+            ${BUILD_DIR}/**/*.apk
+            ${BUILD_DIR}/**/*.aab
+          if-no-files-found: warn
+
+      # --- Optional: Align & Sign (set secrets to enable) ---
+      # - name: Align & Sign
+      #   if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+      #   env:
+      #     ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      #     ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      #     ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      #     ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      #   run: |
+      #     echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > my-release.keystore
+      #     APK=$(find "${BUILD_DIR}" -name "*-release.apk" | head -n 1)
+      #     if [ -z "$APK" ]; then
+      #       echo "No release APK found to sign"; exit 1; fi
+      #     "${ANDROID_SDK_ROOT}/build-tools/34.0.0/zipalign" -f 4 "$APK" aligned.apk
+      #     "${ANDROID_SDK_ROOT}/build-tools/34.0.0/apksigner" sign \
+      #        --ks my-release.keystore --ks-pass pass:"$ANDROID_KEYSTORE_PASSWORD" \
+      #        --key-pass pass:"$ANDROID_KEY_PASSWORD" --ks-key-alias "$ANDROID_KEY_ALIAS" aligned.apk
+      #     mv aligned.apk QGroundControl-signed.apk
+      # - name: Upload signed APK
+      #   if: ${{ always() }}
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: qgroundcontrol-android-signed
+      #     path: QGroundControl-signed.apk
+      #     if-no-files-found: warn
