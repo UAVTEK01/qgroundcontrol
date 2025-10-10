@@ -28,12 +28,12 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Python
+      - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Install aqtinstall and deps
+      - name: Install aqtinstall
         run: |
           python -m pip install --upgrade pip
           pip install aqtinstall==3.3.0
@@ -44,7 +44,8 @@ jobs:
         run: |
           set -e
           mkdir -p "$ANDROID_SDK_ROOT"
-          yes | sudo ${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          # Accept licenses using the preinstalled cmdline-tools, then install into our local SDK root
+          yes | sudo /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager --licenses || true
           sdkmanager --sdk_root="$ANDROID_SDK_ROOT" \
             "platforms;android-${{ env.ANDROID_API }}" \
             "build-tools;34.0.0" \
@@ -62,15 +63,16 @@ jobs:
           QT_ANDROID_KIT: ${{ env.QT_ANDROID_KIT }}
         run: |
           set -e
-          mkdir -p $HOME/Qt
+          mkdir -p "$HOME/Qt"
 
-          # Host Qt: do NOT request qttools for this combo (it’s not listed for 6.6.3/linux/gcc_64 via aqt)
-          aqt install-qt linux desktop ${QT_VERSION} ${QT_HOST_KIT} --outputdir $HOME/Qt
+          # Host Qt (no extra modules; avoid the 'qttools not found' error you hit)
+          aqt install-qt linux desktop "$QT_VERSION" "$QT_HOST_KIT" --outputdir "$HOME/Qt"
 
-          # Android Qt: keep the modules QGC needs
-          aqt install-qt linux android ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt \
+          # Android Qt (modules needed by QGC)
+          aqt install-qt linux android "$QT_VERSION" "$QT_ANDROID_KIT" --outputdir "$HOME/Qt" \
             -m qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat
 
+          # Export fully-expanded paths for later steps
           echo "QT_HOST_PATH=$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}" >> $GITHUB_ENV
           echo "QT_ANDROID_PATH=$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}" >> $GITHUB_ENV
 
@@ -87,7 +89,6 @@ jobs:
           set -e
           echo "QT_HOST_PATH=${QT_HOST_PATH}"
           echo "QT_ANDROID_PATH=${QT_ANDROID_PATH}"
-
           cmake -S . -B "${BUILD_DIR}" -G Ninja \
             -D CMAKE_BUILD_TYPE=Release \
             -D ANDROID=ON \
@@ -101,10 +102,7 @@ jobs:
             -D CMAKE_PREFIX_PATH="${QT_ANDROID_PATH};${QT_HOST_PATH}"
 
       - name: Build (Ninja)
-        run: |
-          ninja -C "${BUILD_DIR}"
+        run: ninja -C "${{ env.BUILD_DIR }}"
 
-      - name: Package APK/AAB (if applicable)
-        run: |
-          # Add your packaging step here if needed
-          echo "Packaging placeholder"
+      - name: Package (placeholder)
+        run: echo "Add packaging here if needed"
