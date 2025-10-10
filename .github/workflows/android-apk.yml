@@ -47,7 +47,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      # Use Java 17 so sdkmanager runs correctly
+      # 1) Java 17 BEFORE Android SDK so sdkmanager works
       - name: Set up Java 17 (for sdkmanager)
         uses: actions/setup-java@v4
         with:
@@ -83,7 +83,7 @@ jobs:
           set +o pipefail
           yes 2>/dev/null | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null || true
 
-      # Switch to Java 11 for Qt5/Gradle
+      # 2) Switch to Java 11 for Qt5/Gradle compatibility
       - name: Switch to Java 11 (for Qt5/Gradle)
         uses: actions/setup-java@v4
         with:
@@ -91,6 +91,7 @@ jobs:
           java-version: "11"
           cache: gradle
 
+      # 3) Install Qt 5.x (Android target) — qmake flow
       - name: Install Qt (with Android)
         uses: jurplel/install-qt-action@v4
         with:
@@ -100,13 +101,28 @@ jobs:
           cache: true
           # modules: qtimageformats
 
+      # NEW: Detect qmake path dynamically (Qt 5 layouts differ)
+      - name: Locate qmake
+        run: |
+          echo "Qt installed under $HOME/Qt:"
+          find "$HOME/Qt" -maxdepth 3 -type d -print | sed -n '1,200p'
+          QMAKE_PATH=$(find "$HOME/Qt" -type f -name qmake | head -n 1 || true)
+          if [ -z "$QMAKE_PATH" ]; then
+            echo "ERROR: qmake not found under $HOME/Qt" >&2
+            exit 1
+          fi
+          echo "Found qmake: $QMAKE_PATH"
+          echo "QMAKE=$QMAKE_PATH" >> "$GITHUB_ENV"
+          "$QMAKE_PATH" -query || true
+
+      # 4) Configure & Build via qmake/make
       - name: Configure (qmake)
         env:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
         run: |
           mkdir -p build-android
           pushd build-android
-          "${HOME}/Qt/${{ inputs.qt_version }}/android/bin/qmake" -r ../qgroundcontrol.pro -spec android-clang \
+          "$QMAKE" -r ../qgroundcontrol.pro -spec android-clang \
             CONFIG+=release ANDROID_ABIS="${{ inputs.abis }}"
           popd
 
@@ -116,6 +132,7 @@ jobs:
           make -j"$(nproc)"
           popd
 
+      # 5) Package APK via Gradle
       - name: Package APK (assembleRelease)
         env:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
@@ -125,6 +142,7 @@ jobs:
           ./gradlew --no-daemon --warning-mode=all assembleRelease
           popd
 
+      # 6) Upload artifact(s)
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
