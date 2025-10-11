@@ -1,89 +1,88 @@
-name: Android APK
-on: { workflow_dispatch: {} }
+name: Android Qt Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+  pull_request:
 
 jobs:
-  build:
+  android-build:
     runs-on: ubuntu-22.04
-    env:
-      QT_VERSION: "6.8.3"     # QGC-compatible
-      ANDROID_API: "34"
-      BUILD_DIR: build-android
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Base tools
+      - name: Install build deps (ninja, GL headers optional)
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build zip unzip
+          sudo apt-get install -y ninja-build
 
-      - name: Install Android SDK + Build-Tools
-        env:
-          ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
-          ANDROID_HOME:     ${{ github.workspace }}/android-sdk
+      # --- Android SDK (cmdline-tools) ---
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install SDK platforms/build-tools + accept licenses
         run: |
-          set -e
-          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
-          curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o cmdtools.zip
-          unzip -q cmdtools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
-          mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses
-          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" \
-            "platform-tools" "platforms;android-${ANDROID_API}" "build-tools;34.0.0"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "ANDROID_HOME=$ANDROID_SDK_ROOT"     >> $GITHUB_ENV
+          yes | sdkmanager --licenses
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
+      # --- NDK r27c (don’t use android-actions/setup-ndk) ---
       - name: Install NDK r27c
-        id: ndk
         uses: nttld/setup-ndk@v1
+        id: ndk
         with:
           ndk-version: r27c
-
       - name: Export NDK env
         run: |
-          echo "ANDROID_NDK_HOME=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
           echo "ANDROID_NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
-          echo "NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}"         >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
 
+      # --- Qt host (gcc_64) ---
       - name: Install Qt host (gcc_64)
         uses: jurplel/install-qt-action@v4
         with:
-          version:    ${{ env.QT_VERSION }}
-          host:       linux
-          target:     desktop
-          arch:       gcc_64
-          aqtversion: "==3.3.0"     # valid on PyPI
-          cache:      true
-          archives:   "qtbase"
+          version: "6.8.3"
+          host: linux
+          target: desktop
+          arch: gcc_64
+          aqtversion: "==3.3.0"
+          cache: true
+          modules: "qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat"
 
-      - name: Install Qt Android (arm64)
+      # --- Qt for Android (arm64) ---
+      - name: Install Qt for Android (arm64-v8a)
         uses: jurplel/install-qt-action@v4
         with:
-          version:    ${{ env.QT_VERSION }}
-          host:       linux
-          target:     android
-          arch:       android_arm64_v8a
+          version: "6.8.3"
+          host: linux
+          target: android
+          arch: android_arm64_v8a
           aqtversion: "==3.3.0"
-          cache:      true
-          archives:   "qtbase"
-          modules:    "qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat"
+          cache: true
+          modules: "qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat"
 
-      - name: Sanity check toolchain
+      # At this point the action has put qt tools (qt-cmake, androiddeployqt) on PATH
+      - name: Print key paths (debug)
         run: |
-          command -v qt-cmake
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
+          which qt-cmake
           qt-cmake --version
           ninja --version
 
       - name: Configure (Android)
+        env:
+          ANDROID_API: "34"
         run: |
-          qt-cmake -S . -B "${BUILD_DIR}" -G Ninja \
+          qt-cmake -S . -B build-android -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DQT_ANDROID_ABIS=arm64-v8a \
             -DQT_ANDROID_BUILD_ALL_ABIS=OFF \
@@ -92,19 +91,10 @@ jobs:
             -DANDROID_NDK_ROOT="${ANDROID_NDK_ROOT}"
 
       - name: Build
-        run: cmake --build "${BUILD_DIR}" --config Release -- -v
+        run: cmake --build build-android --parallel
 
-      - name: Package APK/AAB
-        run: |
-          cmake --build "${BUILD_DIR}" --target apk || true
-          cmake --build "${BUILD_DIR}" --target aab || true
-          echo "Artifacts found:"
-          find "${BUILD_DIR}" -name "*.apk" -o -name "*.aab" | sed 's/^/  /' || true
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: qgroundcontrol-android
-          path: |
-            ${BUILD_DIR}/**/*.apk
-            ${BUILD_DIR}/**/*.aab
-          if-no-files-found: warn
+      # If your project uses androiddeployqt to make an APK/AAB, add it here:
+      # - name: Package APK
+      #   run: |
+      #     cmake --build build-android --target apk
+      #     ls -la build-android/**/android-build/*.apk || true
