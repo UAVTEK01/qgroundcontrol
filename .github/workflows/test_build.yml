@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     env:
-      QT_VERSION: "6.8.3"                  # QGC requires 6.8.3…6.10.0
+      QT_VERSION: "6.8.3"            # QGC requires 6.8.3…6.10.0
       ANDROID_API: "34"
       BUILD_DIR: "build-android"
       QT_HOST_KIT: "gcc_64"
@@ -29,7 +29,7 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Install Ninja and tooling
+      - name: Install Ninja + tools
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build python3-pip unzip zip curl
@@ -41,7 +41,7 @@ jobs:
         with:
           ndk-version: r27c
 
-      - name: Export NDK env vars
+      - name: Export NDK env
         run: |
           echo "ANDROID_NDK_HOME=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
           echo "ANDROID_NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
@@ -62,14 +62,15 @@ jobs:
             "platforms;android-${ANDROID_API}" \
             "build-tools;34.0.0"
 
-      - name: Install Qt ${QT_VERSION} (host + Android)
+      - name: Install Qt ${QT_VERSION} (host + android)
         run: |
           set -e
           mkdir -p $HOME/Qt
 
           # Host kit
           for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux desktop ${QT_VERSION} ${QT_HOST_KIT} --outputdir $HOME/Qt && break || sleep 10; done
-          # Android kit (+ modules commonly needed by QGC)
+
+          # Android kit (modules commonly required by QGC)
           for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux android ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt \
               -m qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat \
               && break || sleep 10; done
@@ -77,21 +78,44 @@ jobs:
           echo "QT_HOST_PATH=$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}" >> $GITHUB_ENV
           echo "QT_ANDROID_PATH=$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}" >> $GITHUB_ENV
 
-      - name: Configure (CMake using Qt Android toolchain)
+      - name: Locate Qt Android toolchain file
+        run: |
+          set -e
+          HOST_FILE="$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}/lib/cmake/Qt6/qt.toolchain.cmake"
+          ANDR_FILE="$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}/lib/cmake/Qt6/qt.toolchain.cmake"
+
+          if [ -f "$HOST_FILE" ]; then
+            echo "TOOLCHAIN_FILE=$HOST_FILE" >> $GITHUB_ENV
+            echo "Using toolchain from host kit: $HOST_FILE"
+          elif [ -f "$ANDR_FILE" ]; then
+            echo "TOOLCHAIN_FILE=$ANDR_FILE" >> $GITHUB_ENV
+            echo "Using toolchain from android kit: $ANDR_FILE"
+          else
+            echo "::error::qt.toolchain.cmake not found in expected locations."
+            echo "Tried:"
+            echo "  $HOST_FILE"
+            echo "  $ANDR_FILE"
+            echo "Listing host cmake dir (if present):"
+            ls -la "$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}/lib/cmake/Qt6" || true
+            echo "Listing android cmake dir (if present):"
+            ls -la "$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}/lib/cmake/Qt6" || true
+            exit 1
+          fi
+
+      - name: Configure (CMake)
         env:
           QT_HOST_PATH: ${{ env.QT_HOST_PATH }}
           QT_ANDROID_PATH: ${{ env.QT_ANDROID_PATH }}
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_ROOT }}
+          TOOLCHAIN_FILE: ${{ env.TOOLCHAIN_FILE }}
         run: |
           set -e
           echo "QT_HOST_PATH=$QT_HOST_PATH"
           echo "QT_ANDROID_PATH=$QT_ANDROID_PATH"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
           echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
-
-          # Correct path: the toolchain file lives in the HOST kit
-          TOOLCHAIN_FILE="$QT_HOST_PATH/lib/cmake/Qt6/qt.toolchain.cmake"
+          echo "TOOLCHAIN_FILE=$TOOLCHAIN_FILE"
 
           cmake -S . -B "${BUILD_DIR}" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
