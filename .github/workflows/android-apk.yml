@@ -1,19 +1,16 @@
-# Updated Android build workflow — keeps your original structure but replaces
-# marketplace actions that failed on your runner with self-contained steps.
-# - Replaces android-actions/setup-android@v3 and nttld/setup-ndk@v1
-#   with direct downloads + sdkmanager installs (works on runners without
-#   marketplace access).
-# - Ensures SDK/NDK env vars are exported to GITHUB_ENV.
-# - Adds CA/cert fixes and pip/certifi update before running aqtinstall.
-# - Keeps your host-first Qt install, qt-cmake configure, build and artifact upload.
-#
-# Keep branch trigger as 'master' (you had that); change to 'main' if your repo
-# uses main instead.
 name: Android Build
 
 on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
   workflow_dispatch: {}
 
+permissions:
+  contents: read
 
 env:
   JAVA_VERSION: "17"
@@ -88,7 +85,6 @@ jobs:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
         run: |
           set -euo pipefail
-          # sdkmanager expects version without leading 'r' for some listings, but using the value you set works.
           echo "Installing NDK ${ANDROID_NDK_VERSION} into ${ANDROID_SDK_ROOT}"
           sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" "ndk;${ANDROID_NDK_VERSION}" || true
           echo "NDK install: list installed ndks:"
@@ -98,8 +94,6 @@ jobs:
         run: |
           echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}" >> $GITHUB_ENV
           NDK_PATH="${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}"
-          # If sdkmanager unpacks into a slightly different folder (e.g. full version number),
-          # fallback to first directory under ndk if the expected path doesn't exist
           if [ ! -d "${NDK_PATH}" ]; then
             FIRST=$(ls -1 "${ANDROID_SDK_ROOT}/ndk" 2>/dev/null | head -n1 || true)
             if [ -n "$FIRST" ]; then
@@ -140,11 +134,9 @@ jobs:
           OUTPUT_DIR="$HOME/Qt"
           mkdir -p "$OUTPUT_DIR"
 
-          # desired modules (edit this list if your project requires others)
           DESIRED="qtcharts qtlocation qtpositioning qtspeech qt5compat qtmultimedia qtserialport qtimageformats qtshadertools qtconnectivity qtquick3d qtsensors"
 
           echo "Attempting to install Qt ${QT_VERSION} for desktop ${QT_HOST_ARCH} with modules: $DESIRED"
-          # Try install; if aqt fails due to module availability, retry with minimal set
           if python3 -m aqt install-qt linux desktop ${QT_VERSION} ${QT_HOST_ARCH} --outputdir "$OUTPUT_DIR" --modules $DESIRED --autodesktop; then
             echo "Full host Qt install succeeded"
           else
@@ -154,7 +146,6 @@ jobs:
 
           QT_HOST_PATH="${OUTPUT_DIR}/${QT_VERSION}/${QT_HOST_ARCH}"
           if [ ! -d "${QT_HOST_PATH}" ]; then
-            # fallback: if aqt installed under slightly different directory, pick the first matching
             ALT=$(ls -1 "${OUTPUT_DIR}" | grep '^6\.' | tail -n1 || true)
             if [ -n "$ALT" ]; then
               QT_HOST_PATH="${OUTPUT_DIR}/${ALT}/${QT_HOST_ARCH}"
@@ -225,7 +216,6 @@ jobs:
           fi
 
           ANDROID_QT_DIR="${OUTPUT_DIR}/${QT_VERSION}/${QT_ANDROID_ARCH}"
-          # fallback if layout differs
           if [ ! -d "${ANDROID_QT_DIR}" ]; then
             ALT=$(ls -1 "${OUTPUT_DIR}" | grep '^6\.' | tail -n1 || true)
             ANDROID_QT_DIR="${OUTPUT_DIR}/${ALT}/${QT_ANDROID_ARCH}"
@@ -275,8 +265,10 @@ jobs:
           echo "Attempting to build APK/AAB if targets exist..."
           cmake --build "${BUILD_DIR}" --target apk 2>&1 | tee /tmp/apk-build.log || echo "apk target not available or failed"
           cmake --build "${BUILD_DIR}" --target aab 2>&1 | tee /tmp/aab-build.log || echo "aab target not available or failed"
+          
+          # List what we actually built
           echo "=== Build artifacts found ==="
-          find "${BUILD_DIR}" -name "*.apk" -o -name "*.aab" -print || echo "No APK/AAB files found"
+          find "${BUILD_DIR}" -name "*.apk" -o -name "*.aab" 2>/dev/null || echo "No APK/AAB files found yet"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
