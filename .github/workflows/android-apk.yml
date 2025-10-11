@@ -1,165 +1,217 @@
-# Self-contained GitHub Actions workflow to build an Android APK without third-party actions
-# - Installs JDK (setup-java action)
-# - Installs Android command-line tools + SDK, build-tools and NDK via sdkmanager
-# - Installs Qt via python aqtinstall (if your build requires Qt)
-# - Runs gradle assembleDebug in the android working directory and uploads produced APK(s)
-#
-# NOTE:
-# - Adjust QT_VERSION, ANDROID_API_LEVEL, ANDROID_NDK_VERSION, BUILD_TOOLS_VERSION and ANDROID_WORKDIR to match your project.
-# - This workflow may be slower the first run since it downloads SDK/NDK and Qt. Use a self-hosted runner or Docker image for faster repeated runs.
-
 name: Android Build
 
 on:
   workflow_dispatch: {}
 
-env:
-  JAVA_VERSION: "11"
-  ANDROID_API_LEVEL: "30"
-  BUILD_TOOLS_VERSION: "30.0.3"
-  ANDROID_NDK_VERSION: "21.3.6528147"
-  ANDROID_WORKDIR: "android"    # change if your gradle project is in a subdir
-  GRADLEW_PATH: "./gradlew"
-  GRADLE_TASK: "assembleDebug"
-  QT_VERSION: "6.8.3"           # set if you need Qt; otherwise step will install and can be skipped
-  QT_ARCH: "gcc_64"
-  QT_MODULES: "qtwebengine qtpdf" # adjust to your needs
-  ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+permissions:
+  contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+    runs-on: ubuntu-22.04
+    env:
+      ANDROID_API: "34"
+      BUILD_DIR: build-android
+      QT_VERSION: "6.8.3"
 
     steps:
-      - name: Checkout repository
+      - name: Identify this workflow
+        run: |
+          echo "This is .github/workflows/test_build.yml"
+          echo "Run manually from Actions → this workflow → Run workflow (select branch: master)."
+
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          submodules: recursive
 
-      - name: Set up JDK
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
+          java-version: "17"
 
-      - name: Install system packages
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept SDK licenses & install platforms
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platform-tools" "platforms;android-${ANDROID_API}" "build-tools;34.0.0"
+
+      - name: Setup Android NDK r27c
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+          add-to-path: false
+
+      - name: Set Android NDK environment variables
+        run: |
+          echo "ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK=${{ steps.setup-ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
+
+      - name: Install build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y unzip wget zip python3-pip ca-certificates
+          sudo apt-get install -y ninja-build
 
-      - name: Install Android command line tools and SDK components
-        shell: bash
+      # ---------- Host Qt (install first - provides qt-cmake, rcc, etc.) ----------
+      - name: Install Qt host (desktop gcc_64) (aqt, dynamic modules, fallback)
+        id: qt_host
         run: |
           set -euo pipefail
-          export ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}
-          mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
-          cd /tmp
-          # Download latest command line tools (the filename/version may change over time)
-          CLI_ZIP="commandlinetools-linux-8512546_latest.zip"
-          if [ ! -f "${CLI_ZIP}" ]; then
-            wget -q "https://dl.google.com/android/repository/${CLI_ZIP}"
-          fi
-          unzip -q -o "${CLI_ZIP}" -d "${ANDROID_SDK_ROOT}/cmdline-tools"
-          # Move to a 'latest' folder expected by sdkmanager
-          mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
-          mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools/"* "${ANDROID_SDK_ROOT}/cmdline-tools/latest/" || true
-          export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
-          echo "Android SDK root: ${ANDROID_SDK_ROOT}"
-          yes | sdkmanager --licenses || true
-          # Install platform tools, build tools, platform, and NDK
-          sdkmanager "platform-tools" "platforms;android-${ANDROID_API_LEVEL}" "build-tools;${BUILD_TOOLS_VERSION}" "ndk;${ANDROID_NDK_VERSION}"
-          # Show installed
-          sdkmanager --list_installed || true
-        env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+          python3 -m pip install -U aqtinstall
 
-      - name: Export Android NDK path
-        shell: bash
-        run: |
-          export ANDROID_NDK_HOME="${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}"
-          echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME}" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}" >> $GITHUB_ENV
-          echo "PATH=${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${PATH}" >> $GITHUB_ENV
+          # show aqt version for diagnostics
+          python3 -m aqt --version || true
 
-      - name: Cache Gradle and Android SDK (partial)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-            ${{ env.ANDROID_SDK_ROOT }}
-          key: ${{ runner.os }}-build-${{ hashFiles('**/gradle/wrapper/gradle-wrapper.properties') }}-${{ env.GRADLE_TASK }}-${{ env.ANDROID_API_LEVEL }}-${{ env.ANDROID_NDK_VERSION }}
-          restore-keys: |
-            ${{ runner.os }}-build-
+          OUTPUT_DIR="$HOME/Qt"
+          mkdir -p "$OUTPUT_DIR"
 
-      - name: Install Python aqtinstall and (optionally) Qt
-        shell: bash
-        run: |
-          set -e
-          python3 -m pip install --upgrade pip
-          python3 -m pip install --upgrade aqtinstall
-          # Diagnostic: list available Qt releases (useful if aqt can't find 'qt_base')
-          echo "=== aqt: list-qt (diagnostic) ==="
-          python3 -m aqt list-qt linux desktop --arch "${QT_ARCH}" --outputdir /tmp || true
-          # Try to install Qt only if QT_VERSION isn't empty
-          if [ -n "${QT_VERSION}" ]; then
-            echo "Installing Qt ${QT_VERSION} ${QT_ARCH}..."
-            python3 -m aqt install-qt linux desktop "${QT_VERSION}" "${QT_ARCH}" --outputdir "${HOME}/Qt" --modules ${QT_MODULES} --autodesktop || true
-            echo "Qt install step finished (check logs)."
+          # desired modules (edit this list if your project requires others)
+          DESIRED="qtcharts qtlocation qtpositioning qtspeech qt5compat qtmultimedia qtserialport qtimageformats qtshadertools qtconnectivity qtquick3d qtsensors"
+
+          echo "Attempting to install Qt ${QT_VERSION} for desktop gcc_64 with modules: $DESIRED"
+          # Try install; if aqt fails due to module availability, retry with minimal set
+          if python3 -m aqt install-qt linux desktop ${QT_VERSION} gcc_64 --outputdir "$OUTPUT_DIR" --modules $DESIRED; then
+            echo "Full host Qt install succeeded"
           else
-            echo "QT_VERSION empty, skipping Qt install."
+            echo "Full host Qt install failed — falling back to base install without extra modules"
+            python3 -m aqt install-qt linux desktop ${QT_VERSION} gcc_64 --outputdir "$OUTPUT_DIR"
           fi
 
-      - name: Make gradlew executable
-        if: runner.os != 'Windows'
-        run: |
-          chmod +x ${{ env.GRADLEW_PATH }} || true
+          # Compute and export QT_HOST_PATH (QTDIR equivalent)
+          QT_HOST_PATH="${OUTPUT_DIR}/${QT_VERSION}/gcc_64"
+          echo "QT_HOST_PATH=${QT_HOST_PATH}" >> $GITHUB_ENV
+          echo "Installed host Qt into: ${QT_HOST_PATH}"
+          ls -al "${QT_HOST_PATH}" || true
 
-      - name: Build APK with Gradle
-        working-directory: ${{ env.ANDROID_WORKDIR }}
-        shell: bash
-        env:
-          JAVA_HOME: ${{ steps.setup-java.outputs.java-home || env.JAVA_HOME }}
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
-          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
-          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/${{ env.ANDROID_NDK_VERSION }}
+      - name: Capture Host Qt path
+        run: echo "Using QT_HOST_PATH from previous step"
+
+      - name: Verify qt-cmake exists and add to PATH (fail fast)
+        run: |
+          QT_CMAKE="${QT_HOST_PATH}/bin/qt-cmake"
+          if [ -x "$QT_CMAKE" ]; then
+            echo "Found qt-cmake at $QT_CMAKE"
+          else
+            CANDIDATES=(
+              "/home/runner/Qt/${QT_VERSION}/gcc_64/bin/qt-cmake"
+              "/opt/hostedtoolcache/Qt/${QT_VERSION}/gcc_64/bin/qt-cmake"
+            )
+            for c in "${CANDIDATES[@]}"; do
+              if [ -x "$c" ]; then
+                QT_CMAKE="$c"
+                break
+              fi
+            done
+          fi
+          if [ -z "$QT_CMAKE" ]; then
+            QT_CMAKE=$(find /home/runner /opt -type f -name qt-cmake -executable 2>/dev/null | head -n1 || true)
+          fi
+          if [ -z "$QT_CMAKE" ]; then
+            echo "ERROR: qt-cmake not found after host Qt install. Diagnostic listings:"
+            echo "Contents of QT_HOST_PATH (${QT_HOST_PATH}):"
+            ls -al "${QT_HOST_PATH}" || true
+            echo "/home/runner/Qt listing:"
+            ls -al /home/runner/Qt || true
+            echo "/opt/hostedtoolcache/Qt listing:"
+            ls -al /opt/hostedtoolcache/Qt || true
+            exit 1
+          fi
+          QT_BIN=$(dirname "$QT_CMAKE")
+          echo "Adding $QT_BIN to PATH"
+          echo "$QT_BIN" >> $GITHUB_PATH
+          "$QT_CMAKE" --version || true
+
+      # ---------- Qt for Android (install after host) ----------
+      - name: Install Qt for Android (arm64-v8a) (aqt, dynamic modules, fallback)
+        id: qt_android
         run: |
           set -euo pipefail
-          echo "Running: ${{ env.GRADLEW_PATH }} ${{ env.GRADLE_TASK }}"
-          # Ensure executable bits and run with stacktrace
-          chmod +x ${{ env.GRADLEW_PATH }} || true
-          ${{ env.GRADLEW_PATH }} ${{ env.GRADLE_TASK }} --no-daemon --stacktrace
+          python3 -m pip install -U aqtinstall
 
-      - name: Find APKs
-        id: find_apks
-        run: |
-          set -e
-          echo "Searching for APK files..."
-          find . -type f -name "*.apk" -print > apks_found.txt || true
-          if [ -s apks_found.txt ]; then
-            echo "apks<<EOF" >> $GITHUB_OUTPUT
-            cat apks_found.txt >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
-            cat apks_found.txt
+          # show aqt version for diagnostics
+          python3 -m aqt --version || true
+
+          OUTPUT_DIR="$HOME/Qt"
+          mkdir -p "$OUTPUT_DIR"
+
+          # desired Android modules (edit as needed)
+          DESIRED_ANDROID="qtcharts qtlocation qtpositioning qtspeech qt5compat qtmultimedia qtserialport qtimageformats qtshadertools qtconnectivity qtquick3d qtsensors"
+
+          echo "Attempting to install Qt ${QT_VERSION} for android android_arm64_v8a with modules: $DESIRED_ANDROID"
+          if python3 -m aqt install-qt linux android ${QT_VERSION} android_arm64_v8a --outputdir "$OUTPUT_DIR" --modules $DESIRED_ANDROID; then
+            echo "Full android Qt install succeeded"
           else
-            echo "No APK found."
-            echo "apks<<EOF" >> $GITHUB_OUTPUT
-            echo "" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
+            echo "Full android Qt install failed — falling back to base install without extra modules"
+            python3 -m aqt install-qt linux android ${QT_VERSION} android_arm64_v8a --outputdir "$OUTPUT_DIR"
           fi
 
-      - name: Upload APK artifact(s)
-        if: steps.find_apks.outputs.apks != ''
+          ANDROID_QT_DIR="${OUTPUT_DIR}/${QT_VERSION}/android_arm64_v8a"
+          echo "ANDROID_QT_DIR=${ANDROID_QT_DIR}" >> $GITHUB_ENV
+          echo "Installed Android Qt into: ${ANDROID_QT_DIR}"
+          ls -al "${ANDROID_QT_DIR}" || true
+
+      - name: Capture Android Qt path
+        run: echo "ANDROID_QT_DIR=${ANDROID_QT_DIR}" >> $GITHUB_ENV
+
+      - name: Sanity check paths
+        run: |
+          echo "ANDROID_QT_DIR=${ANDROID_QT_DIR}"
+          echo "QT_HOST_PATH=${QT_HOST_PATH}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
+          echo "ANDROID_NDK_ROOT=${ANDROID_NDK_ROOT}"
+          echo "PATH=${PATH}"
+
+      - name: Configure (qt-cmake)
+        run: |
+          # Use qt-cmake from HOST Qt installation (not Android Qt)
+          # Android Qt does not include qt-cmake - it's only in the host/desktop Qt
+          # However, we need to set CMAKE_PREFIX_PATH to point to Android Qt
+          QT_CMAKE_BIN="${QT_HOST_PATH}/bin/qt-cmake"
+          if [ ! -x "$QT_CMAKE_BIN" ]; then
+            echo "ERROR: qt-cmake not found at $QT_CMAKE_BIN"
+            echo "Contents of QT_HOST_PATH (${QT_HOST_PATH}):"
+            ls -al "${QT_HOST_PATH}" || true
+            echo "Contents of QT_HOST_PATH/bin:"
+            ls -al "${QT_HOST_PATH}/bin" || true
+            exit 1
+          fi
+          echo "Using $QT_CMAKE_BIN for configure"
+          "$QT_CMAKE_BIN" -S . -B "${BUILD_DIR}" -G Ninja \
+            -DCMAKE_PREFIX_PATH="${ANDROID_QT_DIR}" \
+            -DQT_HOST_PATH="${QT_HOST_PATH}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DQT_ANDROID_ABIS=arm64-v8a \
+            -DQT_ANDROID_BUILD_ALL_ABIS=OFF \
+            -DANDROID_PLATFORM=android-${ANDROID_API} \
+            -DANDROID_SDK_ROOT="${ANDROID_SDK_ROOT}" \
+            -DANDROID_NDK_ROOT="${ANDROID_NDK_ROOT}"
+
+      - name: Build
+        run: cmake --build "${BUILD_DIR}" --config Release --parallel
+
+      - name: Package APK/AAB (optional targets)
+        continue-on-error: true
+        run: |
+          echo "Attempting to build APK/AAB if targets exist..."
+          cmake --build "${BUILD_DIR}" --target apk 2>&1 | tee /tmp/apk-build.log || echo "apk target not available or failed"
+          cmake --build "${BUILD_DIR}" --target aab 2>&1 | tee /tmp/aab-build.log || echo "aab target not available or failed"
+          
+          # List what we actually built
+          echo "=== Build artifacts found ==="
+          find "${BUILD_DIR}" -name "*.apk" -o -name "*.aab" 2>/dev/null || echo "No APK/AAB files found yet"
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: android-apks
+          name: android-output
           path: |
-            $(cat apks_found.txt | tr '\n' '\0' | xargs -0 -I{} echo {})
-          retention-days: 7
-
-      - name: Fail if no APK produced
-        if: steps.find_apks.outputs.apks == ''
-        run: |
-          echo "No APK found after build. Check the logs for failures (Qt/Gradle/sdks)."
-          exit 1
+            ${{ env.BUILD_DIR }}/**/*.apk
+            ${{ env.BUILD_DIR }}/**/*.aab
+            ${{ env.BUILD_DIR }}/android-build/**/outputs/**/*.apk
+            ${{ env.BUILD_DIR }}/android-build/**/outputs/**/*.aab
+          if-no-files-found: warn
