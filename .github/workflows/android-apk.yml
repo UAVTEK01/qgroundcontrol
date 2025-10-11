@@ -1,4 +1,4 @@
-name: Android Build
+name: Android Build (Qt 6.8.x host-first)
 
 on:
   push:
@@ -53,7 +53,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y unzip wget zip python3-pip ca-certificates ninja-build pkg-config curl jq
 
-      # ---------- Install Android SDK cmdline-tools and core packages (replaces setup-android action) ----------
+      # ---------- Install Android SDK cmdline-tools and core packages ----------
       - name: Install Android SDK command-line tools and required packages
         shell: bash
         env:
@@ -73,12 +73,10 @@ jobs:
             mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools/"* "${ANDROID_SDK_ROOT}/cmdline-tools/latest/" || true
           fi
           export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
-          # accept licenses and install required packages
           yes | sdkmanager --licenses || true
           sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" "platform-tools" "platforms;android-${ANDROID_API}" "build-tools;34.0.0" || true
           sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --list_installed || true
 
-      # ---------- Install NDK via sdkmanager (replaces setup-ndk action) ----------
       - name: Install Android NDK (via sdkmanager)
         shell: bash
         env:
@@ -87,7 +85,7 @@ jobs:
           set -euo pipefail
           echo "Installing NDK ${ANDROID_NDK_VERSION} into ${ANDROID_SDK_ROOT}"
           sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" "ndk;${ANDROID_NDK_VERSION}" || true
-          echo "NDK install: list installed ndks:"
+          echo "NDK directories:"
           ls -la "${ANDROID_SDK_ROOT}/ndk" || true
 
       - name: Export Android SDK/NDK env
@@ -103,7 +101,6 @@ jobs:
           echo "ANDROID_NDK_ROOT=${NDK_PATH}" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=${NDK_PATH}" >> $GITHUB_ENV
           echo "PATH=${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${PATH}" >> $GITHUB_ENV
-          echo "Exported ANDROID_SDK_ROOT/NDK to GITHUB_ENV"
 
       - name: Accept SDK licenses & show installed packages (debug)
         run: |
@@ -156,9 +153,6 @@ jobs:
           echo "Installed host Qt into: ${QT_HOST_PATH}"
           ls -al "${QT_HOST_PATH}" || true
 
-      - name: Capture Host Qt path
-        run: echo "Using QT_HOST_PATH=${QT_HOST_PATH:-<not-set-yet>}"
-
       - name: Verify qt-cmake exists and add to PATH (fail fast)
         run: |
           QT_CMAKE="${QT_HOST_PATH}/bin/qt-cmake"
@@ -196,7 +190,6 @@ jobs:
           echo "$QT_BIN" >> $GITHUB_PATH
           "$QT_CMAKE" --version || true
 
-      # ---------- Qt for Android (install after host) ----------
       - name: Install Qt for Android (arm64-v8a) (aqt, dynamic modules, fallback)
         id: qt_android
         run: |
@@ -224,9 +217,6 @@ jobs:
           echo "ANDROID_QT_DIR=${ANDROID_QT_DIR}" >> $GITHUB_ENV
           echo "Installed Android Qt into: ${ANDROID_QT_DIR}"
           ls -al "${ANDROID_QT_DIR}" || true
-
-      - name: Capture Android Qt path
-        run: echo "ANDROID_QT_DIR=${ANDROID_QT_DIR:-<not-set-yet>}" >> $GITHUB_ENV
 
       - name: Sanity check paths
         run: |
@@ -265,10 +255,8 @@ jobs:
           echo "Attempting to build APK/AAB if targets exist..."
           cmake --build "${BUILD_DIR}" --target apk 2>&1 | tee /tmp/apk-build.log || echo "apk target not available or failed"
           cmake --build "${BUILD_DIR}" --target aab 2>&1 | tee /tmp/aab-build.log || echo "aab target not available or failed"
-          
-          # List what we actually built
           echo "=== Build artifacts found ==="
-          find "${BUILD_DIR}" -name "*.apk" -o -name "*.aab" 2>/dev/null || echo "No APK/AAB files found yet"
+          find "${BUILD_DIR}" -name "*.apk" -o -name "*.aab" -print || echo "No APK/AAB files found"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
