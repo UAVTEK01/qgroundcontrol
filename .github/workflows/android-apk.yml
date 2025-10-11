@@ -1,125 +1,136 @@
-name: Android (Qt 6.8.3)
+# GitHub Actions workflow: build QGroundControl Android APK (recommended)
+# - Builds on ubuntu-latest
+# - Installs JDK, Android SDK/NDK, and Qt (via qt-actions/setup-qt)
+# - Caches Gradle and Qt downloads where possible
+# - Runs gradle assembleDebug and uploads produced APKs
+#
+# NOTE: Qt downloads can be large and sometimes aqt/catalog endpoints change.
+# If the "qt install" step fails with "qt_base not found" run the diagnostic step
+# shown below or use a self-hosted runner / prebuilt Docker image that already
+# contains the required Qt + Android toolchain.
 
 on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
-jobs:
-  android-build:
-    runs-on: ubuntu-22.04
+env:
+  JAVA_VERSION: "11"
+  ANDROID_API_LEVEL: 30
+  BUILD_TOOLS_VERSION: "30.0.3"
+  ANDROID_NDK_VERSION: "21.3.6528147"
+  GRADLEW_PATH: "./gradlew"
+  GRADLE_TASK: "assembleDebug"
+  QT_VERSION: "6.8.3"          # change to the Qt version your project needs
+  QT_ARCH: "gcc_64"           # desktop host arch for Qt
+  QT_MODULES: "qtwebengine qtpdf"  # add/remove modules as needed
+  ANDROID_WORKDIR: "android"  # change if your android gradle project is in a subdir
 
-    env:
-      QT_VERSION: "6.8.3"
-      ANDROID_API: "34"
-      BUILD_DIR: build-android
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
+    - name: Set up JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: ${{ env.JAVA_VERSION }}
 
-      - name: Install Ninja
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build
+    - name: Cache Gradle
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+          .gradle
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/gradle/wrapper/gradle-wrapper.properties') }}-${{ env.GRADLE_TASK }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+    - name: Set up Android SDK & NDK
+      uses: r0adkll/setup-android@v2
+      with:
+        api-level: ${{ env.ANDROID_API_LEVEL }}
+        build-tools: ${{ env.BUILD_TOOLS_VERSION }}
+        ndk: ${{ env.ANDROID_NDK_VERSION }}
+        cache: true
 
-      - name: Accept Android SDK licenses (quiet)
-        run: |
-          yes | sdkmanager --licenses >/dev/null || true
+    - name: Show environment (debug)
+      run: |
+        echo "JAVA_HOME=$JAVA_HOME"
+        java -version || true
+        echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+        echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+        ${ANDROID_SDK_ROOT:-$ANDROID_HOME}/tools/bin/sdkmanager --version || true
 
-      - name: Install Android SDK components
-        run: |
-          sdkmanager --install "platform-tools" "platforms;android-${ANDROID_API}" "build-tools;34.0.0"
+    - name: Install Qt (via qt-actions/setup-qt)
+      # This action wraps aqtinstall and handles common cases. If this step errors
+      # with "qt_base not found" or similar, see the diagnostic step below.
+      uses: qt-actions/setup-qt@v2
+      with:
+        qt-version: ${{ env.QT_VERSION }}
+        host: linux
+        arch: ${{ env.QT_ARCH }}
+        # Request commonly-required modules; adapt to your project.
+        modules: ${{ env.QT_MODULES }}
+        cache: true
 
-      - name: Install NDK r27c
-        id: ndk
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r27c
+    - name: Qt diagnostic (only prints catalog & available packages when needed)
+      if: failure() || always()
+      run: |
+        echo "Listing available Qt releases for debugging..."
+        python3 -m pip install --upgrade aqtinstall || true
+        python3 -m aqt list-qt linux desktop --arch ${{ env.QT_VERSION }} || true
+        # Also show a list of architectures for the version
+        python3 -m aqt list-qt linux desktop --arch ${{ env.QT_ARCH }} || true
+      continue-on-error: true
 
-      - name: Export NDK environment variables
-        run: |
-          echo "ANDROID_NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
-          echo "ANDROID_NDK_HOME=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
-          echo "NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+    - name: Make gradlew executable
+      if: runner.os != 'Windows'
+      run: |
+        chmod +x ${{ env.GRADLEW_PATH }} || true
 
-      # -----------------------------
-      # Qt install via maintained action
-      # (avoid explicit module names that may not exist)
-      # -----------------------------
+    - name: Build APK
+      working-directory: ${{ env.ANDROID_WORKDIR }}
+      run: |
+        echo "Starting Gradle task: ${{ env.GRADLE_TASK }}"
+        ${{ env.GRADLEW_PATH }} ${{ env.GRADLE_TASK }} --no-daemon --stacktrace
+      env:
+        JAVA_HOME: ${{ steps.setup-java.outputs.java-home || env.JAVA_HOME }}
+        ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+        ANDROID_HOME: ${{ env.ANDROID_HOME }}
 
-      - name: Install Qt host tools (linux desktop gcc_64)
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: ${{ env.QT_VERSION }}
-          host: linux
-          target: desktop
-          arch: gcc_64
-          # modules intentionally omitted to let the action install defaults
+    - name: Find APKs
+      id: find_apks
+      run: |
+        set -e
+        echo "Searching for APK files..."
+        find . -type f -name "*.apk" -print > apks_found.txt || true
+        echo "apks<<EOF" >> $GITHUB_OUTPUT
+        cat apks_found.txt || true
+        echo "EOF" >> $GITHUB_OUTPUT
+        cat apks_found.txt
 
-      - name: Install Qt for Android (arm64-v8a)
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: ${{ env.QT_VERSION }}
-          host: linux
-          target: android
-          arch: android_arm64_v8a
-          # modules intentionally omitted to let the action install defaults
+    - name: Upload APK artifact(s)
+      if: steps.find_apks.outputs.apks != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: android-apks
+        path: |
+          $(cat apks_found.txt | tr '\n' '\0' | xargs -0 -I{} echo {})
+        retention-days: 7
 
-      - name: Locate qt-cmake & show Qt tree (debug info)
-        run: |
-          which qt-cmake || true
-          qt-cmake --version || true
-          echo "IQTA_QT_ROOT_DIR=${IQTA_QT_ROOT_DIR}"
-          echo "IQTA_TOOLS=${IQTA_TOOLS}"
-          # list the installed Qt directories (if variables available)
-          if [ -n "${IQTA_QT_ROOT_DIR}" ]; then
-            echo "Contents of IQTA_QT_ROOT_DIR:"
-            ls -la "${IQTA_QT_ROOT_DIR}" || true
-          fi
-          if [ -n "${IQTA_TOOLS}" ]; then
-            echo "Contents of IQTA_TOOLS:"
-            ls -la "${IQTA_TOOLS}" || true
-          fi
-          # Print qt installation directories under /opt/Qt (common location used by the action)
-          echo "Checking common locations for installed Qt packages:"
-          for p in /opt/Qt "$HOME/Qt"; do
-            if [ -d "$p" ]; then
-              echo "Found $p"
-              ls -la "$p" || true
-            fi
-          done
-
-      - name: Configure CMake for Android
-        run: |
-          # The action adds Qt tools to PATH, so qt-cmake is available directly
-          qt-cmake -S . -B "${BUILD_DIR}" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DQT_ANDROID_ABIS=arm64-v8a \
-            -DQT_ANDROID_BUILD_ALL_ABIS=OFF \
-            -DANDROID_PLATFORM=android-${ANDROID_API} \
-            -DANDROID_SDK_ROOT="${ANDROID_SDK_ROOT}" \
-            -DANDROID_NDK_ROOT="${ANDROID_NDK_ROOT}"
-
-      - name: Build
-        run: cmake --build "${BUILD_DIR}" --parallel
-
-      - name: Upload Android artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-artifacts
-          path: |
-            ${BUILD_DIR}/**/*.apk
-            ${BUILD_DIR}/**/*.aab
-            ${BUILD_DIR}/android-build/**/outputs/**/*.apk
-            ${BUILD_DIR}/android-build/**/outputs/**/*.aab
-          if-no-files-found: warn
+    - name: Fail if no APK produced
+      if: steps.find_apks.outputs.apks == ''
+      run: |
+        echo "No APK found after build. Check the logs for failures (Qt/Gradle)."
+        exit 1
