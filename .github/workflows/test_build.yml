@@ -1,81 +1,122 @@
-name: Android-Linux-6.6.3 (manual)
+name: Android APK (Manual, Qt 6.8.3)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # manual trigger only
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        BuildType: [Release]
-
-    defaults:
-      run:
-        shell: bash
+  build-android:
+    runs-on: ubuntu-22.04
 
     env:
-      ARTIFACT: QGroundControl.apk
-      PACKAGE: QGroundControl
-      QT_VERSION: 6.6.3
-      # same ABI logic as upstream; keep both ABIs like the official file
-      QT_ANDROID_ABIS: ${{ matrix.BuildType == 'Release' && 'armeabi-v7a;arm64-v8a' || 'arm64-v8a' }}
+      QT_VERSION: "6.8.3"                 # <-- matches your CMake's required range 6.8.3...6.10.0
+      ANDROID_API: "34"                   # 33 also works; 34 is fine with r27c
+      ANDROID_NDK_VERSION: "27.2.12479015"  # NDK r27c exact package id
+      ANDROID_SDK_ROOT: "${{ github.workspace }}/android-sdk"
+      ANDROID_HOME: "${{ github.workspace }}/android-sdk"
+      NDK_ROOT: "${{ github.workspace }}/android-sdk/ndk/27.2.12479015"
+      BUILD_DIR: "build-android"
+      QT_HOST_KIT: "gcc_64"
+      QT_ANDROID_KIT: "android_arm64_v8a"
+      QT_BASE_URL: "https://download.qt.io"
 
     steps:
-      - name: Checkout repo
+      - name: Checkout (with submodules)
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-tags: true
 
-      # Uses the project's own composite action: .github/actions/common
-      - name: Initial Setup
-        uses: ./.github/actions/common
-
-      # Uses the project's own composite action: .github/actions/qt-android
-      - name: Install Qt for Android
-        uses: ./.github/actions/qt-android
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
-          host: linux
-          arch: gcc_64
-          version: ${{ env.QT_VERSION }}
-          abis: ${{ env.QT_ANDROID_ABIS }}
-          cpm-modules: ${{ runner.temp }}/shadow_build_dir/cpm_modules
+          distribution: temurin
+          java-version: "17"
 
-      # Mirror the PR signing path from upstream so manual runs build a debug-signed APK
-      - name: Setup android signing (debug)
+      - name: Install tools (ninja, aqt)
         run: |
-          echo "QGC_ANDROID_KEYSTORE_STORE_PASS=android" >> $GITHUB_ENV
-          echo "QGC_ANDROID_KEYSTORE_KEY_PASS=android" >> $GITHUB_ENV
-          echo "QGC_ANDROID_KEYSTORE_PATH=${{ github.workspace }}/deploy/android/debug.keystore" >> $GITHUB_ENV
-          echo "QGC_ANDROID_KEYSTORE_ALIAS=androiddebugkey" >> $GITHUB_ENV
+          sudo apt-get update
+          sudo apt-get install -y ninja-build python3-pip unzip zip
+          python3 -m pip install --upgrade "aqtinstall>=3.3.0"
 
-      - name: Configure
-        working-directory: ${{ runner.temp }}/shadow_build_dir
+      - name: Install Android SDK + NDK r27c
         run: |
-          ${{ env.QT_ROOT_DIR }}/bin/qt-cmake -S ${{ github.workspace }} -B . -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ matrix.BuildType }} \
-            -DQT_ANDROID_ABIS="${{ env.QT_ANDROID_ABIS }}" \
+          set -e
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o cmdtools.zip
+          unzip -q cmdtools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
+          mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses
+
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" \
+            "platform-tools" \
+            "platforms;android-${ANDROID_API}" \
+            "build-tools;34.0.0" \
+            "ndk;${ANDROID_NDK_VERSION}"
+
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "NDK_ROOT=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
+
+      - name: Install Qt 6.8.3 (host + Android)
+        run: |
+          set -e
+          mkdir -p $HOME/Qt
+
+          # Host kit
+          for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux desktop ${QT_VERSION} ${QT_HOST_KIT} --outputdir $HOME/Qt && break || sleep 10; done
+
+          # Android kit (arm64 only, adjust if you need more ABIs)
+          for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux android ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt && break || sleep 10; done
+
+          echo "QT_HOST_PATH=$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}" >> $GITHUB_ENV
+          echo "QT_ANDROID_PATH=$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}" >> $GITHUB_ENV
+
+      - name: Diagnostics
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "NDK_ROOT=$NDK_ROOT"
+          echo "QT_HOST_PATH=$QT_HOST_PATH"
+          echo "QT_ANDROID_PATH=$QT_ANDROID_PATH"
+          cmake --version || true
+          ninja --version || true
+          ls -la "$HOME/Qt/${QT_VERSION}" || true
+          ls -la "$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}/bin" || true
+          ls -la "$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}/bin" || true
+
+      - name: Configure (qt-cmake, Android arm64-v8a)
+        run: |
+          set -e
+          export PATH="$QT_HOST_PATH/bin:$PATH"
+
+          # Use Qt's CMake wrapper so it picks the right toolchains automatically
+          qt-cmake -S . -B "${BUILD_DIR}" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DQT_HOST_PATH="${QT_HOST_PATH}" \
+            -DQT_ANDROID_ABIS="arm64-v8a" \
             -DQT_ANDROID_BUILD_ALL_ABIS=OFF \
-            -DQT_HOST_PATH="${{ env.QT_ROOT_DIR }}/../gcc_64" \
             -DQT_ANDROID_SIGN_APK=ON \
-            -DQT_ANDROID_KEYSTORE_STORE_PASS=$QGC_ANDROID_KEYSTORE_STORE_PASS \
-            -DQT_ANDROID_KEYSTORE_KEY_PASS=$QGC_ANDROID_KEYSTORE_KEY_PASS \
-            -DQT_ANDROID_KEYSTORE_PATH=$QGC_ANDROID_KEYSTORE_PATH \
-            -DQT_ANDROID_KEYSTORE_ALIAS=$QGC_ANDROID_KEYSTORE_ALIAS \
-            -DQT_DEBUG_FIND_PACKAGE=ON \
-            -DQGC_STABLE_BUILD=OFF
+            -DQT_ANDROID_KEYSTORE_PATH="${{ github.workspace }}/deploy/android/debug.keystore" \
+            -DQT_ANDROID_KEYSTORE_ALIAS="androiddebugkey" \
+            -DQT_ANDROID_KEYSTORE_STORE_PASS="android" \
+            -DQT_ANDROID_KEYSTORE_KEY_PASS="android"
 
       - name: Build
-        working-directory: ${{ runner.temp }}/shadow_build_dir
-        run: cmake --build . --target all --config ${{ matrix.BuildType }}
+        run: cmake --build "${BUILD_DIR}" --config Release -- -v
 
-      - name: Copy APK to named artifact
-        run: cp ${{ runner.temp }}/shadow_build_dir/android-build/*.apk ${{ runner.temp }}/shadow_build_dir/${{ env.ARTIFACT }}
+      - name: Package APK (best-effort)
+        run: |
+          cmake --build "${BUILD_DIR}" --target apk || true
+          echo "Searching for APK/AAB…"
+          find "${BUILD_DIR}" -name "*.apk" -print || true
+          find "${BUILD_DIR}" -name "*.aab" -print || true
 
-      - name: Upload APK
+      - name: Upload APK/AAB
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.PACKAGE }}
-          path: ${{ runner.temp }}/shadow_build_dir/android-build/*.apk
+          name: qgroundcontrol-android
+          path: |
+            ${BUILD_DIR}/**/*.apk
+            ${BUILD_DIR}/**/*.aab
+          if-no-files-found: warn
