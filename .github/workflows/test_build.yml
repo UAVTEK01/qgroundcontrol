@@ -1,4 +1,4 @@
-name: Android APK (Manual, Qt 6.8.3)
+name: Android APK TEST
 
 on:
   workflow_dispatch:  # manual trigger only
@@ -8,12 +8,10 @@ jobs:
     runs-on: ubuntu-22.04
 
     env:
-      QT_VERSION: "6.8.3"                 # <-- matches your CMake's required range 6.8.3...6.10.0
-      ANDROID_API: "34"                   # 33 also works; 34 is fine with r27c
-      ANDROID_NDK_VERSION: "27.2.12479015"  # NDK r27c exact package id
+      QT_VERSION: "6.8.3"                 # Your CMake asks for 6.8.3...6.10.0
+      ANDROID_API: "34"
       ANDROID_SDK_ROOT: "${{ github.workspace }}/android-sdk"
-      ANDROID_HOME: "${{ github.workspace }}/android-sdk"
-      NDK_ROOT: "${{ github.workspace }}/android-sdk/ndk/27.2.12479015"
+      ANDROID_HOME:    "${{ github.workspace }}/android-sdk"
       BUILD_DIR: "build-android"
       QT_HOST_KIT: "gcc_64"
       QT_ANDROID_KIT: "android_arm64_v8a"
@@ -31,13 +29,18 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Set up NDK r27c (avoid sdkmanager fetch)
+        uses: android-actions/setup-ndk@v3
+        with:
+          ndk-version: r27c
+
       - name: Install tools (ninja, aqt)
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build python3-pip unzip zip
           python3 -m pip install --upgrade "aqtinstall>=3.3.0"
 
-      - name: Install Android SDK + NDK r27c
+      - name: Install Android SDK (cmdline-tools, platforms, build-tools)
         run: |
           set -e
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
@@ -50,13 +53,7 @@ jobs:
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" \
             "platform-tools" \
             "platforms;android-${ANDROID_API}" \
-            "build-tools;34.0.0" \
-            "ndk;${ANDROID_NDK_VERSION}"
-
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "NDK_ROOT=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> $GITHUB_ENV
+            "build-tools;34.0.0"
 
       - name: Install Qt 6.8.3 (host + Android)
         run: |
@@ -66,7 +63,7 @@ jobs:
           # Host kit
           for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux desktop ${QT_VERSION} ${QT_HOST_KIT} --outputdir $HOME/Qt && break || sleep 10; done
 
-          # Android kit (arm64 only, adjust if you need more ABIs)
+          # Android kit
           for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux android ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt && break || sleep 10; done
 
           echo "QT_HOST_PATH=$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}" >> $GITHUB_ENV
@@ -76,7 +73,8 @@ jobs:
         run: |
           echo "JAVA_HOME=$JAVA_HOME"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          echo "NDK_ROOT=$NDK_ROOT"
+          echo "NDK from setup-ndk:"
+          echo "  ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-$ANDROID_NDK_ROOT}"
           echo "QT_HOST_PATH=$QT_HOST_PATH"
           echo "QT_ANDROID_PATH=$QT_ANDROID_PATH"
           cmake --version || true
@@ -90,17 +88,14 @@ jobs:
           set -e
           export PATH="$QT_HOST_PATH/bin:$PATH"
 
-          # Use Qt's CMake wrapper so it picks the right toolchains automatically
+          # Prefer the NDK path provided by the action
+          export ANDROID_NDK_ROOT="${ANDROID_NDK_HOME:-$ANDROID_NDK_ROOT}"
+
           qt-cmake -S . -B "${BUILD_DIR}" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DQT_HOST_PATH="${QT_HOST_PATH}" \
             -DQT_ANDROID_ABIS="arm64-v8a" \
-            -DQT_ANDROID_BUILD_ALL_ABIS=OFF \
-            -DQT_ANDROID_SIGN_APK=ON \
-            -DQT_ANDROID_KEYSTORE_PATH="${{ github.workspace }}/deploy/android/debug.keystore" \
-            -DQT_ANDROID_KEYSTORE_ALIAS="androiddebugkey" \
-            -DQT_ANDROID_KEYSTORE_STORE_PASS="android" \
-            -DQT_ANDROID_KEYSTORE_KEY_PASS="android"
+            -DQT_ANDROID_BUILD_ALL_ABIS=OFF
 
       - name: Build
         run: cmake --build "${BUILD_DIR}" --config Release -- -v
