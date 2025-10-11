@@ -1,22 +1,27 @@
-name: Android (Qt 6.8.3) — no aqt
+name: Android Build (Qt 6.8.3, no aqt)
 
 on:
   workflow_dispatch: {}
   push:
     paths:
-      - ".github/workflows/android_qt683.yml"
+      - ".github/workflows/build-android.yml"
 
 permissions:
   contents: read
 
 jobs:
-  build-android:
+  build:
     runs-on: ubuntu-22.04
     env:
       ANDROID_API: "34"
       BUILD_DIR: build-android
 
     steps:
+      - name: Identify this workflow
+        run: |
+          echo "This is .github/workflows/build-android.yml"
+          echo "If you see 'aqtinstall' in logs, another workflow is still running."
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -56,12 +61,12 @@ jobs:
           host: linux
           target: android
           arch: android_arm64_v8a
-          # Only modules that exist for Android
+          # Only modules that exist for Android in 6.8.x
           modules: qtserialport qtlocation qtpositioning qtimageformats qtconnectivity qtshadertools
           cache: true
+
       - name: Capture Android Qt path
-        run: |
-          echo "ANDROID_QT_DIR=${QTDIR}" >> $GITHUB_ENV
+        run: echo "ANDROID_QT_DIR=${QTDIR}" >> $GITHUB_ENV
 
       # ---------- Host Qt (tools for qt-cmake, rcc, etc.) ----------
       - name: Install Qt 6.8.3 (Host gcc_64)
@@ -73,9 +78,9 @@ jobs:
           target: desktop
           arch: gcc_64
           cache: true
+
       - name: Capture Host Qt path
-        run: |
-          echo "QT_HOST_PATH=${QTDIR}" >> $GITHUB_ENV
+        run: echo "QT_HOST_PATH=${QTDIR}" >> $GITHUB_ENV
 
       - name: Sanity check paths
         run: |
