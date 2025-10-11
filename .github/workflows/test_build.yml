@@ -71,7 +71,6 @@ jobs:
           if [ -x "$QT_CMAKE" ]; then
             echo "Found qt-cmake at $QT_CMAKE"
           else
-            # quick fallbacks
             CANDIDATES=(
               "/home/runner/Qt/${{ env.QT_VERSION }}/gcc_64/bin/qt-cmake"
               "/opt/hostedtoolcache/Qt/${{ env.QT_VERSION }}/gcc_64/bin/qt-cmake"
@@ -83,7 +82,6 @@ jobs:
               fi
             done
           fi
-          # wide search fallback (slower)
           if [ -z "$QT_CMAKE" ]; then
             QT_CMAKE=$(find /home/runner /opt -type f -name qt-cmake -executable 2>/dev/null | head -n1 || true)
           fi
@@ -127,7 +125,6 @@ jobs:
 
       - name: Configure (qt-cmake)
         run: |
-          # Use qt-cmake from PATH or fallback to host path
           if command -v qt-cmake >/dev/null 2>&1; then
             QT_CMAKE_BIN="qt-cmake"
           else
