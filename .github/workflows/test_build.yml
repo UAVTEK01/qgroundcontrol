@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     env:
-      QT_VERSION: "6.8.3"                 # CMake requests 6.8.3...6.10.0
+      QT_VERSION: "6.8.3"                 # matches CMake's 6.8.3...6.10.0 requirement
       ANDROID_API: "34"
       ANDROID_SDK_ROOT: "${{ github.workspace }}/android-sdk"
       ANDROID_HOME:    "${{ github.workspace }}/android-sdk"
@@ -29,11 +29,19 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # Use a maintained NDK action; avoids sdkmanager looking for a missing NDK build number
+      # Set up a known-good NDK without sdkmanager guessing a missing revision
       - name: Set up NDK r27c
+        id: ndk
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r27c
+
+      # Make the NDK path visible to subsequent steps
+      - name: Export NDK env vars
+        run: |
+          echo "ANDROID_NDK_HOME=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
 
       - name: Install tools (ninja, aqt)
         run: |
@@ -64,7 +72,7 @@ jobs:
           # Host kit
           for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux desktop ${QT_VERSION} ${QT_HOST_KIT} --outputdir $HOME/Qt && break || sleep 10; done
 
-          # Android kit with modules commonly needed by QGC
+          # Android kit with common QGC modules
           for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux android ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt \
               -m qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat \
               && break || sleep 10; done
@@ -76,7 +84,8 @@ jobs:
         run: |
           echo "JAVA_HOME=$JAVA_HOME"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-$ANDROID_NDK_ROOT}"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
           echo "QT_HOST_PATH=$QT_HOST_PATH"
           echo "QT_ANDROID_PATH=$QT_ANDROID_PATH"
           cmake --version || true
@@ -86,18 +95,11 @@ jobs:
           ls -la "$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}/bin" || true
 
       - name: Configure (qt-cmake, Android arm64-v8a)
-        env:
-          ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_ROOT }}
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
         run: |
           set -e
           export PATH="$QT_HOST_PATH/bin:$PATH"
 
-          # Ensure NDK vars are present (nttld action sets these; mirror to both names)
-          export ANDROID_NDK_ROOT="${ANDROID_NDK_HOME:-$ANDROID_NDK_ROOT}"
-          [ -n "$ANDROID_NDK_ROOT" ] || { echo "NDK not set"; exit 1; }
-
-          # qt-cmake configures Android via qt.toolchain.cmake when SDK/NDK are set
+          # qt-cmake picks up qt.toolchain.cmake and uses ANDROID_SDK_ROOT + ANDROID_NDK_ROOT
           qt-cmake -S . -B "${BUILD_DIR}" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DQT_HOST_PATH="${QT_HOST_PATH}" \
