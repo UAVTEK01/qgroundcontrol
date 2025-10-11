@@ -32,8 +32,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Accept SDK licenses (no broken pipe)
-        shell: bash
+      - name: Accept Android SDK licenses (no broken pipe)
         run: |
           yes | sdkmanager --licenses >/dev/null || true
 
@@ -47,7 +46,7 @@ jobs:
         with:
           ndk-version: r27c
 
-      - name: Export NDK env
+      - name: Export NDK environment variables
         run: |
           echo "ANDROID_NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
@@ -56,26 +55,22 @@ jobs:
       # =========================
       # PYTHON + AQT (fixed)
       # =========================
-      - name: Set up Python
+      - name: Set up Python 3.11 and aqtinstall
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install aqt (pinned) + deps
+      - name: Install aqt and dependencies
         run: |
           python -m pip install --upgrade pip
-          # Known-good aqt version; avoids XML package-name regressions
           python -m pip install "aqtinstall==3.3.0"
-          python -m pip show aqtinstall
 
-      - name: Show available Qt modules (for log visibility)
+      - name: Log available Qt modules
         run: |
           python -m aqt list-qt linux desktop --modules ${QT_VERSION} gcc_64 || true
           python -m aqt list-qt linux android --modules ${QT_VERSION} android_arm64_v8a || true
 
-      - name: Install Qt (desktop gcc_64) via aqt
-        id: aqt_host
-        continue-on-error: true
+      - name: Install Qt (desktop gcc_64)
         env:
           QT_DIR: ${{ github.workspace }}/Qt
         run: |
@@ -85,10 +80,7 @@ jobs:
             -m qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat
           echo "QT_HOST_PATH=${QT_DIR}/${QT_VERSION}/gcc_64" >> $GITHUB_ENV
 
-      - name: Install Qt (android arm64) via aqt
-        id: aqt_android
-        if: steps.aqt_host.outcome == 'success'
-        continue-on-error: true
+      - name: Install Qt (android arm64)
         env:
           QT_DIR: ${{ github.workspace }}/Qt
         run: |
@@ -97,49 +89,13 @@ jobs:
             -m qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat
           echo "QT_ANDROID_PATH=${QT_DIR}/${QT_VERSION}/android_arm64_v8a" >> $GITHUB_ENV
 
-      # =========================
-      # Fallback if aqt ever fails
-      # =========================
-      - name: Fallback: Install Qt host kit (gcc_64)
-        if: steps.aqt_host.outcome != 'success'
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: "${{ env.QT_VERSION }}"
-          host: linux
-          target: desktop
-          arch: gcc_64
-          cache: true
-          modules: "qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat"
-
-      - name: Fallback: Install Qt Android kit (arm64)
-        if: steps.aqt_android.outcome != 'success' && steps.aqt_host.outcome == 'success'
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: "${{ env.QT_VERSION }}"
-          host: linux
-          target: android
-          arch: android_arm64_v8a
-          cache: true
-          modules: "qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat"
-
-      - name: Ensure Qt paths (works for aqt or fallback)
-        shell: bash
+      - name: Verify Qt setup
         run: |
-          if [ -z "${QT_HOST_PATH}" ]; then
-            # jurplel paths
-            echo "QT_HOST_PATH=${GITHUB_WORKSPACE}/Qt/${QT_VERSION}/gcc_64" >> $GITHUB_ENV
-          fi
-          if [ -z "${QT_ANDROID_PATH}" ]; then
-            echo "QT_ANDROID_PATH=${GITHUB_WORKSPACE}/Qt/${QT_VERSION}/android_arm64_v8a" >> $GITHUB_ENV
-          fi
           echo "QT_HOST_PATH=$QT_HOST_PATH"
           echo "QT_ANDROID_PATH=$QT_ANDROID_PATH"
           "${QT_HOST_PATH}/bin/qt-cmake" --version || true
 
-      - name: Configure (Android arm64-v8a)
-        env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
-          ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_ROOT }}
+      - name: Configure CMake for Android
         run: |
           "${QT_ANDROID_PATH}/bin/qt-cmake" -S . -B "${BUILD_DIR}" -G Ninja \
             -DQT_HOST_PATH="${QT_HOST_PATH}" \
@@ -153,7 +109,7 @@ jobs:
       - name: Build
         run: cmake --build "${BUILD_DIR}" --parallel
 
-      - name: Upload artifacts
+      - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
         with:
           name: android-artifacts
