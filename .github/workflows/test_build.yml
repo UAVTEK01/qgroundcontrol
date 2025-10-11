@@ -1,4 +1,4 @@
-name: Android Qt Build
+name: Android (Qt 6.8.3)
 
 on:
   workflow_dispatch:
@@ -10,11 +10,19 @@ jobs:
   android-build:
     runs-on: ubuntu-22.04
 
+    env:
+      QT_VERSION: "6.8.3"
+      ANDROID_API: "34"
+      BUILD_DIR: build-android
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-      - name: Set up Java 17
+      # Tooling
+      - name: Set up Java 17 (for Android tooling)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -25,28 +33,32 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build
 
-      - name: Install Android SDK
+      - name: Set up Android SDK (commandline tools)
         uses: android-actions/setup-android@v3
-      - name: Install SDK platforms/build-tools + accept licenses
+
+      - name: Accept licenses + install SDK components
+        shell: bash
         run: |
           yes | sdkmanager --licenses
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          sdkmanager "platform-tools" "platforms;android-${ANDROID_API}" "build-tools;34.0.0"
 
       - name: Install NDK r27c
         id: ndk
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r27c
+
       - name: Export NDK env
         run: |
           echo "ANDROID_NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
           echo "NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
 
-      - name: Install Qt host (gcc_64)
+      # ===== Qt install (no direct aqt calls!) =====
+      - name: Install Qt host kit (gcc_64)
         uses: jurplel/install-qt-action@v4
         with:
-          version: "6.8.3"
+          version: "${{ env.QT_VERSION }}"
           host: linux
           target: desktop
           arch: gcc_64
@@ -54,10 +66,10 @@ jobs:
           cache: true
           modules: "qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat"
 
-      - name: Install Qt for Android (arm64-v8a)
+      - name: Install Qt Android kit (android_arm64_v8a)
         uses: jurplel/install-qt-action@v4
         with:
-          version: "6.8.3"
+          version: "${{ env.QT_VERSION }}"
           host: linux
           target: android
           arch: android_arm64_v8a
@@ -65,19 +77,28 @@ jobs:
           cache: true
           modules: "qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat"
 
-      - name: Verify tools
+      - name: Export Qt paths
+        # The install-qt action installs to $GITHUB_WORKSPACE/Qt/<ver>/<kit>
         run: |
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
+          echo "QT_HOST_PATH=${GITHUB_WORKSPACE}/Qt/${QT_VERSION}/gcc_64" >> $GITHUB_ENV
+          echo "QT_ANDROID_PATH=${GITHUB_WORKSPACE}/Qt/${QT_VERSION}/android_arm64_v8a" >> $GITHUB_ENV
+
+      - name: Verify toolchain on PATH
+        run: |
+          echo "QT_HOST_PATH=$QT_HOST_PATH"
+          echo "QT_ANDROID_PATH=$QT_ANDROID_PATH"
           which qt-cmake
           qt-cmake --version
           ninja --version
 
-      - name: Configure (Android)
+      # ===== Configure & Build (Android) =====
+      - name: Configure (Android, arm64-v8a)
+        shell: bash
         env:
-          ANDROID_API: "34"
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_ROOT }}
         run: |
-          qt-cmake -S . -B build-android -G Ninja \
+          qt-cmake -S . -B "${BUILD_DIR}" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DQT_ANDROID_ABIS=arm64-v8a \
             -DQT_ANDROID_BUILD_ALL_ABIS=OFF \
@@ -86,4 +107,17 @@ jobs:
             -DANDROID_NDK_ROOT="${ANDROID_NDK_ROOT}"
 
       - name: Build
-        run: cmake --build build-android --parallel
+        run: cmake --build "${BUILD_DIR}" --parallel
+
+      # (Optional) If your CMake config packages with androiddeployqt in Release,
+      # the APK/AAB typically lands under one of these. We upload whatever we find.
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-artifacts
+          path: |
+            ${BUILD_DIR}/**/*.apk
+            ${BUILD_DIR}/**/*.aab
+            ${BUILD_DIR}/android-build/**/outputs/**/*.apk
+            ${BUILD_DIR}/android-build/**/outputs/**/*.aab
+          if-no-files-found: warn
