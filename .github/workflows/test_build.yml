@@ -1,3 +1,11 @@
+name: Android Build (Qt 6.8.3, host-first)
+
+on: workflow_dispatch: {}
+
+permissions: contents: read
+
+jobs: build: runs-on: ubuntu-22.04 env: ANDROID_API: "34" BUILD_DIR: build-android QT_VERSION: "6.8.3"
+
 steps:
   - name: Identify this workflow
     run: |
@@ -177,7 +185,7 @@ steps:
       echo "Attempting to build APK/AAB if targets exist..."
       cmake --build "${BUILD_DIR}" --target apk 2>&1 | tee /tmp/apk-build.log || echo "apk target not available or failed"
       cmake --build "${BUILD_DIR}" --target aab 2>&1 | tee /tmp/aab-build.log || echo "aab target not available or failed"
-
+      
       # List what we actually built
       echo "=== Build artifacts found ==="
       find "${BUILD_DIR}" -name "*.apk" -o -name "*.aab" 2>/dev/null || echo "No APK/AAB files found yet"
