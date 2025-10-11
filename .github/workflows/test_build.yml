@@ -1,4 +1,4 @@
-name: Android APK (Manual)
+name: Android APK (Manual, Qt 6
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     env:
-      QT_VERSION: "6.10.0"         # QGC wants 6.8.3...6.10.0; use the newest allowed
+      QT_VERSION: "6.9.3"          # QGC allows 6.8.3...6.10.0; 6.9.3 is reliable
       ANDROID_API: "34"
       BUILD_DIR: "build-android"
 
@@ -24,7 +24,7 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Install base tools
+      - name: Base tools
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build unzip zip curl
@@ -41,7 +41,7 @@ jobs:
           echo "ANDROID_NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
           echo "NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
 
-      - name: Install Android SDK (cmdline-tools, platform, build-tools)
+      - name: Install Android SDK + platforms/build-tools
         env:
           ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
           ANDROID_HOME:     ${{ github.workspace }}/android-sdk
@@ -59,8 +59,8 @@ jobs:
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT"     >> $GITHUB_ENV
 
-      # Qt host kit (adds qt-cmake to PATH)
-      - name: Install Qt host (desktop gcc_64)
+      # Qt desktop host kit (provides qt-cmake)
+      - name: Install Qt host (gcc_64)
         uses: jurplel/install-qt-action@v4
         with:
           version:    ${{ env.QT_VERSION }}
@@ -70,7 +70,7 @@ jobs:
           cache:      true
           aqtversion: "==3.3.0"
 
-      # Qt Android kit + modules QGC usually needs
+      # Qt Android kit (arm64-v8a) with modules QGC needs
       - name: Install Qt android (arm64-v8a)
         uses: jurplel/install-qt-action@v4
         with:
@@ -82,9 +82,9 @@ jobs:
           cache:      true
           aqtversion: "==3.3.0"
 
-      - name: Sanity check tools
+      - name: Sanity check
         run: |
-          echo "qt-cmake: $(command -v qt-cmake || true)"
+          echo "qt-cmake path: $(command -v qt-cmake || true)"
           qt-cmake --version
           cmake --version
           ninja --version
@@ -102,13 +102,12 @@ jobs:
             -DANDROID_SDK_ROOT="${ANDROID_SDK_ROOT}" \
             -DANDROID_NDK_ROOT="${ANDROID_NDK_ROOT}"
 
-      - name: Build (verbose)
+      - name: Build
         run: cmake --build "${BUILD_DIR}" --config Release -- -v
 
-      - name: Package (best-effort)
+      - name: Package
         run: |
           cmake --build "${BUILD_DIR}" --target apk || true
-          echo "Searching for APK/AAB outputs..."
           find "${BUILD_DIR}" -name "*.apk" -print || true
           find "${BUILD_DIR}" -name "*.aab" -print || true
 
