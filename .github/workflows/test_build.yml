@@ -13,7 +13,7 @@ jobs:
       BUILD_DIR: build-android
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -32,13 +32,12 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Accept Android SDK licenses (no broken pipe)
+      - name: Accept SDK licenses (no broken pipe)
         shell: bash
         run: |
           yes | sdkmanager --licenses >/dev/null || true
 
       - name: Install Android SDK components
-        shell: bash
         run: |
           sdkmanager --install "platform-tools" "platforms;android-${ANDROID_API}" "build-tools;34.0.0"
 
@@ -48,55 +47,102 @@ jobs:
         with:
           ndk-version: r27c
 
-      - name: Export NDK environment variables
+      - name: Export NDK env
         run: |
           echo "ANDROID_NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
           echo "NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
 
-      # ===== Install Qt =====
-      - name: Install Qt host kit (gcc_64)
+      # =========================
+      # PYTHON + AQT (fixed)
+      # =========================
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install aqt (pinned) + deps
+        run: |
+          python -m pip install --upgrade pip
+          # Known-good aqt version; avoids XML package-name regressions
+          python -m pip install "aqtinstall==3.3.0"
+          python -m pip show aqtinstall
+
+      - name: Show available Qt modules (for log visibility)
+        run: |
+          python -m aqt list-qt linux desktop --modules ${QT_VERSION} gcc_64 || true
+          python -m aqt list-qt linux android --modules ${QT_VERSION} android_arm64_v8a || true
+
+      - name: Install Qt (desktop gcc_64) via aqt
+        id: aqt_host
+        continue-on-error: true
+        env:
+          QT_DIR: ${{ github.workspace }}/Qt
+        run: |
+          mkdir -p "${QT_DIR}"
+          python -m aqt install-qt linux desktop ${QT_VERSION} gcc_64 \
+            -O "${QT_DIR}" \
+            -m qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat
+          echo "QT_HOST_PATH=${QT_DIR}/${QT_VERSION}/gcc_64" >> $GITHUB_ENV
+
+      - name: Install Qt (android arm64) via aqt
+        id: aqt_android
+        if: steps.aqt_host.outcome == 'success'
+        continue-on-error: true
+        env:
+          QT_DIR: ${{ github.workspace }}/Qt
+        run: |
+          python -m aqt install-qt linux android ${QT_VERSION} android_arm64_v8a \
+            -O "${QT_DIR}" \
+            -m qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat
+          echo "QT_ANDROID_PATH=${QT_DIR}/${QT_VERSION}/android_arm64_v8a" >> $GITHUB_ENV
+
+      # =========================
+      # Fallback if aqt ever fails
+      # =========================
+      - name: Fallback: Install Qt host kit (gcc_64)
+        if: steps.aqt_host.outcome != 'success'
         uses: jurplel/install-qt-action@v4
         with:
           version: "${{ env.QT_VERSION }}"
           host: linux
           target: desktop
           arch: gcc_64
-          aqtversion: "==3.3.0"
           cache: true
           modules: "qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat"
 
-      - name: Install Qt Android kit (android_arm64_v8a)
+      - name: Fallback: Install Qt Android kit (arm64)
+        if: steps.aqt_android.outcome != 'success' && steps.aqt_host.outcome == 'success'
         uses: jurplel/install-qt-action@v4
         with:
           version: "${{ env.QT_VERSION }}"
           host: linux
           target: android
           arch: android_arm64_v8a
-          aqtversion: "==3.3.0"
           cache: true
           modules: "qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat"
 
-      - name: Export Qt paths
+      - name: Ensure Qt paths (works for aqt or fallback)
+        shell: bash
         run: |
-          echo "QT_HOST_PATH=${GITHUB_WORKSPACE}/Qt/${QT_VERSION}/gcc_64" >> $GITHUB_ENV
-          echo "QT_ANDROID_PATH=${GITHUB_WORKSPACE}/Qt/${QT_VERSION}/android_arm64_v8a" >> $GITHUB_ENV
-
-      - name: Verify Qt and Ninja availability
-        run: |
+          if [ -z "${QT_HOST_PATH}" ]; then
+            # jurplel paths
+            echo "QT_HOST_PATH=${GITHUB_WORKSPACE}/Qt/${QT_VERSION}/gcc_64" >> $GITHUB_ENV
+          fi
+          if [ -z "${QT_ANDROID_PATH}" ]; then
+            echo "QT_ANDROID_PATH=${GITHUB_WORKSPACE}/Qt/${QT_VERSION}/android_arm64_v8a" >> $GITHUB_ENV
+          fi
           echo "QT_HOST_PATH=$QT_HOST_PATH"
           echo "QT_ANDROID_PATH=$QT_ANDROID_PATH"
-          qt-cmake --version
-          ninja --version
+          "${QT_HOST_PATH}/bin/qt-cmake" --version || true
 
-      # ===== Configure & Build =====
-      - name: Configure project (Android)
-        shell: bash
+      - name: Configure (Android arm64-v8a)
         env:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_ROOT }}
         run: |
-          qt-cmake -S . -B "${BUILD_DIR}" -G Ninja \
+          "${QT_ANDROID_PATH}/bin/qt-cmake" -S . -B "${BUILD_DIR}" -G Ninja \
+            -DQT_HOST_PATH="${QT_HOST_PATH}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DQT_ANDROID_ABIS=arm64-v8a \
             -DQT_ANDROID_BUILD_ALL_ABIS=OFF \
@@ -104,10 +150,10 @@ jobs:
             -DANDROID_SDK_ROOT="${ANDROID_SDK_ROOT}" \
             -DANDROID_NDK_ROOT="${ANDROID_NDK_ROOT}"
 
-      - name: Build project
+      - name: Build
         run: cmake --build "${BUILD_DIR}" --parallel
 
-      - name: Upload Android artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: android-artifacts
