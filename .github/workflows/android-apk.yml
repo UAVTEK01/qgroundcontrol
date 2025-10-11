@@ -1,4 +1,4 @@
-name: Android Build (Qt 6.8.x host-first)
+name: Android Build 2
 
 on:
   workflow_dispatch: {}
