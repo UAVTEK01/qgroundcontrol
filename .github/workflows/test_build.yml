@@ -125,34 +125,45 @@ jobs:
 
       - name: Configure (qt-cmake)
         run: |
-          if command -v qt-cmake >/dev/null 2>&1; then
-            QT_CMAKE_BIN="qt-cmake"
-          else
-            QT_CMAKE_BIN="${QT_HOST_PATH}/bin/qt-cmake"
+          # Use qt-cmake from Android Qt installation (not host Qt)
+          QT_CMAKE_BIN="${ANDROID_QT_DIR}/bin/qt-cmake"
+          if [ ! -x "$QT_CMAKE_BIN" ]; then
+            echo "ERROR: qt-cmake not found at $QT_CMAKE_BIN"
+            echo "Contents of ANDROID_QT_DIR (${ANDROID_QT_DIR}):"
+            ls -al "${ANDROID_QT_DIR}" || true
+            exit 1
           fi
           echo "Using $QT_CMAKE_BIN for configure"
           "$QT_CMAKE_BIN" -S . -B "${BUILD_DIR}" -G Ninja \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-${ANDROID_API} \
-            -DQT_ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT}" \
-            -DQT_ANDROID_NDK_ROOT="${ANDROID_NDK_ROOT}" \
             -DQT_HOST_PATH="${QT_HOST_PATH}" \
-            -DCMAKE_PREFIX_PATH="${ANDROID_QT_DIR}" \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_BUILD_TYPE=Release \
+            -DQT_ANDROID_ABIS=arm64-v8a \
+            -DQT_ANDROID_BUILD_ALL_ABIS=OFF \
+            -DANDROID_PLATFORM=android-${ANDROID_API} \
+            -DANDROID_SDK_ROOT="${ANDROID_SDK_ROOT}" \
+            -DANDROID_NDK_ROOT="${ANDROID_NDK_ROOT}"
 
       - name: Build
-        run: cmake --build "${BUILD_DIR}" --config Release -j"$(nproc)"
+        run: cmake --build "${BUILD_DIR}" --config Release --parallel
 
-      - name: Package (best-effort)
+      - name: Package APK/AAB (optional targets)
+        continue-on-error: true
         run: |
-          cmake --build "${BUILD_DIR}" --target apk || true
-          cmake --build "${BUILD_DIR}" --target aab || true
+          echo "Attempting to build APK/AAB if targets exist..."
+          cmake --build "${BUILD_DIR}" --target apk 2>&1 | tee /tmp/apk-build.log || echo "apk target not available or failed"
+          cmake --build "${BUILD_DIR}" --target aab 2>&1 | tee /tmp/aab-build.log || echo "aab target not available or failed"
+          
+          # List what we actually built
+          echo "=== Build artifacts found ==="
+          find "${BUILD_DIR}" -name "*.apk" -o -name "*.aab" 2>/dev/null || echo "No APK/AAB files found yet"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: android-output
           path: |
-            ${BUILD_DIR}/**/*.apk
-            ${BUILD_DIR}/**/*.aab
+            ${{ env.BUILD_DIR }}/**/*.apk
+            ${{ env.BUILD_DIR }}/**/*.aab
+            ${{ env.BUILD_DIR }}/android-build/**/outputs/**/*.apk
+            ${{ env.BUILD_DIR }}/android-build/**/outputs/**/*.aab
           if-no-files-found: warn
