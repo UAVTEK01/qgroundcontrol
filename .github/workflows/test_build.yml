@@ -1,7 +1,10 @@
 name: Android (Qt 6.8.3)
 
 on:
-  workflow_dispatch: {}   # manual only
+  workflow_dispatch: {}
+  push:
+    paths:
+      - ".github/workflows/android_qt683.yml"
 
 permissions:
   contents: read
@@ -44,7 +47,7 @@ jobs:
       - name: Install Ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      # Qt for Android (arm64) – use only modules that exist for Android
+      # Qt for Android (arm64) – only modules that exist for Android
       - name: Install Qt 6.8.3 (Android arm64-v8a)
         uses: jurplel/install-qt-action@v4
         with:
@@ -55,7 +58,7 @@ jobs:
           modules: qtserialport qtlocation qtpositioning qtimageformats qtconnectivity qtshadertools
           cache: true
 
-      # Host Qt to provide tools CMake expects
+      # Host Qt to provide host tools expected by CMake/Qt
       - name: Install Qt 6.8.3 (Host gcc_64)
         uses: jurplel/install-qt-action@v4
         with:
@@ -64,6 +67,13 @@ jobs:
           target: desktop
           arch: gcc_64
           cache: true
+
+      - name: Show Qt variables (sanity check)
+        run: |
+          echo "Qt6_DIR=${Qt6_DIR}"
+          echo "QTDIR=${QTDIR}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
+          echo "ANDROID_NDK_ROOT=${ANDROID_NDK_ROOT}"
 
       - name: Configure (CMake)
         run: |
