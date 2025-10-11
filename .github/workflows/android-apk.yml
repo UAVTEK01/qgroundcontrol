@@ -1,4 +1,4 @@
-name: Android APK (Manual, Qt 6.6.3)
+name: Android APK (Manual, Qt 6.8.3)
 
 on:
   workflow_dispatch:    # manual trigger only
@@ -8,13 +8,13 @@ jobs:
     runs-on: ubuntu-22.04
 
     env:
-      QT_VERSION: "6.8.3"                         # REQUIRED: project requests 6.8.3...6.10.0
+      QT_VERSION: "6.8.3"                         # matches CMake requirement (6.8.3...6.10.0)
       ANDROID_API: "33"
-      ANDROID_NDK_VERSION: "26.1.10909125"        # REQUIRED for Qt 6.8.x
+      ANDROID_NDK_VERSION: "26.1.10909125"        # NDK r26c for Qt 6.8.x
       ANDROID_SDK_ROOT: "${{ github.workspace }}/android-sdk"
       ANDROID_HOME: "${{ github.workspace }}/android-sdk"
-      NDK_ROOT: "${{ github.workspace }}/android-sdk/ndk/${{ env.ANDROID_NDK_VERSION }}"
-      ANDROID_NDK_HOME: "${{ github.workspace }}/android-sdk/ndk/${{ env.ANDROID_NDK_VERSION }}"
+      NDK_ROOT: "${{ github.workspace }}/android-sdk/ndk/26.1.10909125"
+      ANDROID_NDK_HOME: "${{ github.workspace }}/android-sdk/ndk/26.1.10909125"
       BUILD_DIR: build-android
       QT_HOST_KIT: "gcc_64"
       QT_ANDROID_KIT: "android_arm64_v8a"
