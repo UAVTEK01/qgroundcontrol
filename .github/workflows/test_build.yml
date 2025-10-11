@@ -1,13 +1,11 @@
-name: Android APK (clean)
-
-on:
-  workflow_dispatch:
+name: Android APK
+on: { workflow_dispatch: {} }
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     env:
-      QT_VERSION: "6.8.3"
+      QT_VERSION: "6.8.3"     # QGC-compatible
       ANDROID_API: "34"
       BUILD_DIR: build-android
 
@@ -24,21 +22,9 @@ jobs:
       - name: Base tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build unzip zip curl
+          sudo apt-get install -y ninja-build zip unzip
 
-      - name: Android NDK r27c
-        id: ndk
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r27c
-
-      - name: Export NDK env
-        run: |
-          echo "ANDROID_NDK_HOME=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
-          echo "ANDROID_NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
-          echo "NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
-
-      - name: Android SDK (cmdline-tools + platform/build-tools)
+      - name: Install Android SDK + Build-Tools
         env:
           ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
           ANDROID_HOME:     ${{ github.workspace }}/android-sdk
@@ -54,39 +40,48 @@ jobs:
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT"     >> $GITHUB_ENV
 
-      # Qt host kit (gcc_64) — pin aqt version and use a reliable mirror
-      - uses: jurplel/install-qt-action@v4
+      - name: Install NDK r27c
+        id: ndk
+        uses: nttld/setup-ndk@v1
         with:
-          version:    "6.8.3"
+          ndk-version: r27c
+
+      - name: Export NDK env
+        run: |
+          echo "ANDROID_NDK_HOME=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}"         >> $GITHUB_ENV
+
+      - name: Install Qt host (gcc_64)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version:    ${{ env.QT_VERSION }}
           host:       linux
           target:     desktop
           arch:       gcc_64
-          aqtversion: "==3.2.2"                     # stable with Qt 6.8.x feeds
-          mirror:     "https://mirrors.ocf.berkeley.edu/qt/"
+          aqtversion: "==3.3.0"     # valid on PyPI
           cache:      true
-          # Work around the 'qt_base' XML glitch by asking explicitly for qtbase archive
           archives:   "qtbase"
 
-      # Qt Android kit (arm64) — same pins/mirror
-      - uses: jurplel/install-qt-action@v4
+      - name: Install Qt Android (arm64)
+        uses: jurplel/install-qt-action@v4
         with:
-          version:    "6.8.3"
+          version:    ${{ env.QT_VERSION }}
           host:       linux
           target:     android
           arch:       android_arm64_v8a
-          aqtversion: "==3.2.2"
-          mirror:     "https://mirrors.ocf.berkeley.edu/qt/"
+          aqtversion: "==3.3.0"
           cache:      true
-          modules:    "qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat"
           archives:   "qtbase"
+          modules:    "qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat"
 
-      - name: Sanity
+      - name: Sanity check toolchain
         run: |
           command -v qt-cmake
           qt-cmake --version
           ninja --version
 
-      - name: Configure
+      - name: Configure (Android)
         run: |
           qt-cmake -S . -B "${BUILD_DIR}" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -99,11 +94,12 @@ jobs:
       - name: Build
         run: cmake --build "${BUILD_DIR}" --config Release -- -v
 
-      - name: Package
+      - name: Package APK/AAB
         run: |
           cmake --build "${BUILD_DIR}" --target apk || true
-          find "${BUILD_DIR}" -name "*.apk" -print || true
-          find "${BUILD_DIR}" -name "*.aab" -print || true
+          cmake --build "${BUILD_DIR}" --target aab || true
+          echo "Artifacts found:"
+          find "${BUILD_DIR}" -name "*.apk" -o -name "*.aab" | sed 's/^/  /' || true
 
       - uses: actions/upload-artifact@v4
         with:
