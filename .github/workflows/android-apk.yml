@@ -12,16 +12,8 @@
 name: Android Build
 
 on:
-  push:
-    branches:
-      - master
-  pull_request:
-    branches:
-      - master
   workflow_dispatch: {}
 
-permissions:
-  contents: read
 
 env:
   JAVA_VERSION: "17"
