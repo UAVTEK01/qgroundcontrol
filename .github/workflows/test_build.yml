@@ -1,4 +1,4 @@
-name: Android (Qt 6.8.3)
+name: Android (Qt 6.8.3) — no aqt
 
 on:
   workflow_dispatch: {}
@@ -11,9 +11,7 @@ permissions:
 
 jobs:
   build-android:
-    name: Build Android (arm64-v8a)
     runs-on: ubuntu-22.04
-
     env:
       ANDROID_API: "34"
       BUILD_DIR: build-android
@@ -33,33 +31,41 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Accept Android SDK licenses & install platforms
+      - name: Accept SDK licenses & install platforms
         run: |
           yes | sdkmanager --licenses || true
           sdkmanager "platform-tools" "platforms;android-${ANDROID_API}" "build-tools;34.0.0"
 
-      - name: Setup Android NDK (r27c)
+      - name: Setup Android NDK r27c
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r27c
           add-to-path: true
 
-      - name: Install Ninja
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
 
-      # Qt for Android (arm64) – only modules that exist for Android
+      # ---------- Qt for Android (arm64) ----------
       - name: Install Qt 6.8.3 (Android arm64-v8a)
+        id: qt_android
         uses: jurplel/install-qt-action@v4
         with:
           version: 6.8.3
           host: linux
           target: android
           arch: android_arm64_v8a
+          # Only modules that exist for Android
           modules: qtserialport qtlocation qtpositioning qtimageformats qtconnectivity qtshadertools
           cache: true
+      - name: Capture Android Qt path
+        run: |
+          echo "ANDROID_QT_DIR=${QTDIR}" >> $GITHUB_ENV
 
-      # Host Qt to provide host tools expected by CMake/Qt
+      # ---------- Host Qt (tools for qt-cmake, rcc, etc.) ----------
       - name: Install Qt 6.8.3 (Host gcc_64)
+        id: qt_host
         uses: jurplel/install-qt-action@v4
         with:
           version: 6.8.3
@@ -67,32 +73,34 @@ jobs:
           target: desktop
           arch: gcc_64
           cache: true
-
-      - name: Show Qt variables (sanity check)
+      - name: Capture Host Qt path
         run: |
-          echo "Qt6_DIR=${Qt6_DIR}"
-          echo "QTDIR=${QTDIR}"
+          echo "QT_HOST_PATH=${QTDIR}" >> $GITHUB_ENV
+
+      - name: Sanity check paths
+        run: |
+          echo "ANDROID_QT_DIR=${ANDROID_QT_DIR}"
+          echo "QT_HOST_PATH=${QT_HOST_PATH}"
           echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
           echo "ANDROID_NDK_ROOT=${ANDROID_NDK_ROOT}"
 
-      - name: Configure (CMake)
+      - name: Configure (qt-cmake)
         run: |
-          cmake -S . -B ${BUILD_DIR} \
-            -G Ninja \
+          "${QT_HOST_PATH}/bin/qt-cmake" -S . -B "${BUILD_DIR}" -G Ninja \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-${ANDROID_API} \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DQT_ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
-            -DQT_ANDROID_NDK_ROOT="$ANDROID_NDK_ROOT" \
-            -DQT_HOST_PATH="${Qt6_DIR%/lib/cmake/Qt6}/.."
+            -DQT_ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT}" \
+            -DQT_ANDROID_NDK_ROOT="${ANDROID_NDK_ROOT}" \
+            -DQT_HOST_PATH="${QT_HOST_PATH}" \
+            -DCMAKE_PREFIX_PATH="${ANDROID_QT_DIR}"
 
       - name: Build
-        run: cmake --build ${BUILD_DIR} --config Release -j"$(nproc)"
+        run: cmake --build "${BUILD_DIR}" --config Release -j"$(nproc)"
 
-      - name: Package APK/AAB (if targets exist)
+      - name: Package (best-effort)
         run: |
-          cmake --build ${BUILD_DIR} --target apk  || true
-          cmake --build ${BUILD_DIR} --target aab  || true
+          cmake --build "${BUILD_DIR}" --target apk || true
+          cmake --build "${BUILD_DIR}" --target aab || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
