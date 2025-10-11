@@ -36,14 +36,20 @@ jobs:
 
       - name: Accept SDK licenses & install platforms
         run: |
-          yes | sdkmanager --licenses || true
+          yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platform-tools" "platforms;android-${ANDROID_API}" "build-tools;34.0.0"
 
       - name: Setup Android NDK r27c
+        id: ndk
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r27c
-          add-to-path: true
+
+      - name: Export NDK environment variables
+        run: |
+          echo "ANDROID_NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
 
       - name: Install build deps
         run: |
