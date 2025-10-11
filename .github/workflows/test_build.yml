@@ -1,14 +1,14 @@
 name: Android (Qt 6.8.3)
 
 on:
-  workflow_dispatch: {}   # Manual-only trigger — shows “Run workflow” button in Actions
+  workflow_dispatch: {}   # Manual trigger only — shows the “Run workflow” button
 
 permissions:
   contents: read
 
 jobs:
   build-android:
-    name: Build Android APK
+    name: Build Android (arm64-v8a)
     runs-on: ubuntu-22.04
 
     env:
@@ -16,8 +16,10 @@ jobs:
       BUILD_DIR: build-android
 
     steps:
-      - name: Checkout source
+      - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -28,9 +30,9 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Accept Android SDK licenses
+      - name: Accept Android SDK licenses & install platforms
         run: |
-          yes | sdkmanager --licenses || true
+          yes | sdkmanager --licenses || true   # ignore Broken pipe exit
           sdkmanager "platform-tools" "platforms;android-${ANDROID_API}" "build-tools;34.0.0"
 
       - name: Setup Android NDK (r27c)
@@ -39,6 +41,10 @@ jobs:
           ndk-version: r27c
           add-to-path: true
 
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      # Qt for Android (arm64) — modules that are *available* for Android
       - name: Install Qt 6.8.3 (Android)
         uses: jurplel/install-qt-action@v4
         with:
@@ -46,10 +52,12 @@ jobs:
           host: linux
           target: android
           arch: android_arm64_v8a
-          modules: qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat
+          # These modules exist for Android in Qt 6; do not list qtquickcontrols2/qtsvg here
+          modules: qtserialport qtlocation qtpositioning qtimageformats qtconnectivity qtshadertools
           tools: "android"
           cache: true
 
+      # Host Qt (gcc_64) to provide Qt tools that CMake expects on the host
       - name: Install Qt 6.8.3 (Host gcc_64)
         uses: jurplel/install-qt-action@v4
         with:
@@ -59,29 +67,31 @@ jobs:
           arch: gcc_64
           cache: true
 
-      - name: Configure build
+      - name: Configure (CMake)
         run: |
           cmake -S . -B ${BUILD_DIR} \
-            -G "Ninja" \
+            -G Ninja \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-${ANDROID_API} \
             -DCMAKE_BUILD_TYPE=Release \
-            -DQT_HOST_PATH="${Qt6_DIR%/lib/cmake/Qt6}/.." \
             -DQT_ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
-            -DQT_ANDROID_NDK_ROOT="$ANDROID_NDK_ROOT"
+            -DQT_ANDROID_NDK_ROOT="$ANDROID_NDK_ROOT" \
+            -DQT_HOST_PATH="${Qt6_DIR%/lib/cmake/Qt6}/.."
 
       - name: Build
-        run: cmake --build ${BUILD_DIR} --config Release -j$(nproc)
+        run: cmake --build ${BUILD_DIR} --config Release -j"$(nproc)"
 
-      - name: Package APK
+      - name: Package APK/AAB (if targets exist)
         run: |
-          cmake --build ${BUILD_DIR} --target apk || true
-          echo "✅ Packaging complete (or skipped if not configured)."
+          cmake --build ${BUILD_DIR} --target apk  || true
+          cmake --build ${BUILD_DIR} --target aab  || true
+          echo "✅ Packaging attempted (skips are OK if your project doesn't define these targets)."
 
-      - name: Upload APK artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: qgroundcontrol-android
+          name: android-output
           path: |
             ${BUILD_DIR}/**/*.apk
             ${BUILD_DIR}/**/*.aab
+          if-no-files-found: warn
