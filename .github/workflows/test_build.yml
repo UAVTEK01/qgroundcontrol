@@ -1,14 +1,14 @@
 name: Android APK (Manual)
 
 on:
-  workflow_dispatch:  # manual trigger only
+  workflow_dispatch:
 
 jobs:
   build-android:
     runs-on: ubuntu-22.04
 
     env:
-      QT_VERSION: "6.10.0"      # satisfies QGC's find_package range (6.8.3...6.10.0)
+      QT_VERSION: "6.10.0"      # QGC requests 6.8.3...6.10.0
       ANDROID_API: "34"
       BUILD_DIR: "build-android"
 
@@ -52,37 +52,35 @@ jobs:
           curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o cmdtools.zip
           unzip -q cmdtools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
           mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
-
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" \
             "platform-tools" \
             "platforms;android-${ANDROID_API}" \
             "build-tools;34.0.0"
-
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT"     >> $GITHUB_ENV
 
-      # Host Qt kit (puts qt-cmake on PATH)
+      # Qt host kit (puts qt-cmake on PATH)
       - name: Install Qt host ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4
         with:
-          version:   ${{ env.QT_VERSION }}
-          host:      linux
-          target:    desktop
-          arch:      gcc_64
-          cache:     true
+          version:    ${{ env.QT_VERSION }}
+          host:       linux
+          target:     desktop
+          arch:       gcc_64
+          cache:      true
           aqtversion: "==3.3.0"
 
-      # Android Qt kit + modules QGC uses
+      # Qt Android kit + modules QGC uses
       - name: Install Qt android ${{ env.QT_VERSION }}
         uses: jurplel/install-qt-action@v4
         with:
-          version:   ${{ env.QT_VERSION }}
-          host:      linux
-          target:    android
-          arch:      android_arm64_v8a
-          modules:   qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat
-          cache:     true
+          version:    ${{ env.QT_VERSION }}
+          host:       linux
+          target:     android
+          arch:       android_arm64_v8a
+          modules:    qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat
+          cache:      true
           aqtversion: "==3.3.0"
 
       - name: Sanity check (qt-cmake & tools)
@@ -99,7 +97,6 @@ jobs:
           ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_ROOT }}
         run: |
           set -e
-          # qt-cmake auto-loads Qt's Android toolchain if SDK/NDK are set
           qt-cmake -S . -B "${BUILD_DIR}" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DQT_ANDROID_ABIS=arm64-v8a \
