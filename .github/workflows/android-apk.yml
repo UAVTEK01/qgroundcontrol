@@ -9,10 +9,6 @@
 # - This workflow may be slower the first run since it downloads SDK/NDK and Qt. Use a self-hosted runner or Docker image for faster repeated runs.
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
 env:
