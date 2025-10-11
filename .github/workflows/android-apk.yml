@@ -1,6 +1,13 @@
-name: Android Build test
+name: Android Build (Qt 6.8.x host-first)
 
-on: workflow_dispatch
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -26,8 +33,9 @@ jobs:
     steps:
       - name: Identify this workflow
         run: |
-          echo "This is .github/workflows/android-build.yml"
-          echo "Run manually from Actions → this workflow → Run workflow (select branch: master)."
+          echo "Workflow name: Android Build (Qt 6.8.x host-first)"
+          echo "File path: .github/workflows/android-build.yml"
+          echo "Branch: ${GITHUB_REF:-<unknown>}"
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,20 +54,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y unzip wget zip python3-pip ca-certificates ninja-build pkg-config curl jq
 
-      # ---------- Install Android SDK cmdline-tools and core packages ----------
-      - name: Install Android SDK command-line tools and required packages
+      # Install Android SDK components
+      - name: Install Android SDK command-line tools and packages
         shell: bash
         env:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
         run: |
           set -euo pipefail
-          echo "Using ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
           mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
           cd /tmp
           CLI_ZIP="commandlinetools-linux-latest.zip"
-          if [ ! -f "${CLI_ZIP}" ]; then
-            wget -q -O "${CLI_ZIP}" "https://dl.google.com/android/repository/commandlinetools-linux-latest.zip"
-          fi
+          wget -q -O "${CLI_ZIP}" "https://dl.google.com/android/repository/commandlinetools-linux-latest.zip"
           unzip -q -o "${CLI_ZIP}" -d "${ANDROID_SDK_ROOT}/cmdline-tools"
           mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
           if [ -d "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools" ]; then
@@ -76,9 +81,7 @@ jobs:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
         run: |
           set -euo pipefail
-          echo "Installing NDK ${ANDROID_NDK_VERSION} into ${ANDROID_SDK_ROOT}"
           sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" "ndk;${ANDROID_NDK_VERSION}" || true
-          echo "NDK directories:"
           ls -la "${ANDROID_SDK_ROOT}/ndk" || true
 
       - name: Export Android SDK/NDK env
@@ -97,7 +100,6 @@ jobs:
 
       - name: Accept SDK licenses & show installed packages (debug)
         run: |
-          set -euo pipefail
           yes | sdkmanager --licenses || true
           sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --list_installed || true
 
@@ -106,130 +108,83 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build
 
-      # ---------- Host Qt (install first - provides qt-cmake, rcc, etc.) ----------
+      # Qt install (host-first)
       - name: Prepare Python & certs for aqtinstall
         run: |
           python3 -m pip install --upgrade pip certifi || true
           sudo update-ca-certificates || true
 
-      - name: Install aqtinstall (for Qt downloads)
+      - name: Install aqtinstall
         run: |
           python3 -m pip install --upgrade aqtinstall || true
           python3 -m aqt --version || true
 
-      - name: Install Qt host (desktop gcc_64) (aqt, dynamic modules, fallback)
+      - name: Install Qt host (desktop gcc_64)
         id: qt_host
         run: |
           set -euo pipefail
           OUTPUT_DIR="$HOME/Qt"
           mkdir -p "$OUTPUT_DIR"
-
-          DESIRED="qtcharts qtlocation qtpositioning qtspeech qt5compat qtmultimedia qtserialport qtimageformats qtshadertools qtconnectivity qtquick3d qtsensors"
-
-          echo "Attempting to install Qt ${QT_VERSION} for desktop ${QT_HOST_ARCH} with modules: $DESIRED"
+          DESIRED="qtwebengine qtpdf"  # minimal host modules; expand if required
           if python3 -m aqt install-qt linux desktop ${QT_VERSION} ${QT_HOST_ARCH} --outputdir "$OUTPUT_DIR" --modules $DESIRED --autodesktop; then
-            echo "Full host Qt install succeeded"
+            echo "host installed with modules"
           else
-            echo "Full host Qt install failed — falling back to base install without extra modules"
+            echo "fallback to base host install"
             python3 -m aqt install-qt linux desktop ${QT_VERSION} ${QT_HOST_ARCH} --outputdir "$OUTPUT_DIR" --autodesktop || true
           fi
-
           QT_HOST_PATH="${OUTPUT_DIR}/${QT_VERSION}/${QT_HOST_ARCH}"
           if [ ! -d "${QT_HOST_PATH}" ]; then
             ALT=$(ls -1 "${OUTPUT_DIR}" | grep '^6\.' | tail -n1 || true)
-            if [ -n "$ALT" ]; then
-              QT_HOST_PATH="${OUTPUT_DIR}/${ALT}/${QT_HOST_ARCH}"
-            fi
+            QT_HOST_PATH="${OUTPUT_DIR}/${ALT}/${QT_HOST_ARCH}"
           fi
-
           echo "QT_HOST_PATH=${QT_HOST_PATH}" >> $GITHUB_ENV
-          echo "Installed host Qt into: ${QT_HOST_PATH}"
-          ls -al "${QT_HOST_PATH}" || true
+          ls -la "${QT_HOST_PATH}" || true
 
-      - name: Verify qt-cmake exists and add to PATH (fail fast)
+      - name: Add host Qt bin to PATH and validate qt-cmake
         run: |
           QT_CMAKE="${QT_HOST_PATH}/bin/qt-cmake"
-          if [ -x "$QT_CMAKE" ]; then
-            echo "Found qt-cmake at $QT_CMAKE"
-          else
-            echo "qt-cmake not found at expected location; searching common locations..."
-            CANDIDATES=(
-              "/home/runner/Qt/${QT_VERSION}/${QT_HOST_ARCH}/bin/qt-cmake"
-              "/home/runner/Qt/*/${QT_HOST_ARCH}/bin/qt-cmake"
-              "/opt/hostedtoolcache/Qt/${QT_VERSION}/${QT_HOST_ARCH}/bin/qt-cmake"
-            )
-            for c in "${CANDIDATES[@]}"; do
-              if [ -x "$c" ]; then
-                QT_CMAKE="$c"
-                break
-              fi
-            done
-          fi
-          if [ -z "$QT_CMAKE" ]; then
+          if [ ! -x "$QT_CMAKE" ]; then
             QT_CMAKE=$(find /home/runner /opt -type f -name qt-cmake -executable 2>/dev/null | head -n1 || true)
           fi
           if [ -z "$QT_CMAKE" ]; then
-            echo "ERROR: qt-cmake not found after host Qt install. Diagnostic listings:"
-            echo "Contents of QT_HOST_PATH (${QT_HOST_PATH}):"
-            ls -al "${QT_HOST_PATH}" || true
-            echo "/home/runner/Qt listing:"
-            ls -al /home/runner/Qt || true
-            echo "/opt/hostedtoolcache/Qt listing:"
-            ls -al /opt/hostedtoolcache/Qt || true
+            echo "ERROR: qt-cmake not found in host Qt install"
+            ls -la "${QT_HOST_PATH}" || true
             exit 1
           fi
-          QT_BIN=$(dirname "$QT_CMAKE")
-          echo "Adding $QT_BIN to PATH"
-          echo "$QT_BIN" >> $GITHUB_PATH
+          echo "$(dirname "$QT_CMAKE")" >> $GITHUB_PATH
           "$QT_CMAKE" --version || true
 
-      - name: Install Qt for Android (arm64-v8a) (aqt, dynamic modules, fallback)
+      - name: Install Qt for Android (android_arm64_v8a)
         id: qt_android
         run: |
           set -euo pipefail
-          python3 -m pip install -U aqtinstall || true
           OUTPUT_DIR="$HOME/Qt"
           mkdir -p "$OUTPUT_DIR"
-
-          DESIRED_ANDROID="qtcharts qtlocation qtpositioning qtspeech qt5compat qtmultimedia qtserialport qtimageformats qtshadertools qtconnectivity qtquick3d qtsensors"
-
-          echo "Attempting to install Qt ${QT_VERSION} for android ${QT_ANDROID_ARCH} with modules: $DESIRED_ANDROID"
+          DESIRED_ANDROID="qtwebengine qtpdf"  # minimal android modules; expand if required
           if python3 -m aqt install-qt linux android ${QT_VERSION} ${QT_ANDROID_ARCH} --outputdir "$OUTPUT_DIR" --modules $DESIRED_ANDROID --autodesktop; then
-            echo "Full android Qt install succeeded"
+            echo "android qt installed with modules"
           else
-            echo "Full android Qt install failed — falling back to base install without extra modules"
+            echo "fallback android qt base install"
             python3 -m aqt install-qt linux android ${QT_VERSION} ${QT_ANDROID_ARCH} --outputdir "$OUTPUT_DIR" --autodesktop || true
           fi
-
           ANDROID_QT_DIR="${OUTPUT_DIR}/${QT_VERSION}/${QT_ANDROID_ARCH}"
           if [ ! -d "${ANDROID_QT_DIR}" ]; then
             ALT=$(ls -1 "${OUTPUT_DIR}" | grep '^6\.' | tail -n1 || true)
             ANDROID_QT_DIR="${OUTPUT_DIR}/${ALT}/${QT_ANDROID_ARCH}"
           fi
-
           echo "ANDROID_QT_DIR=${ANDROID_QT_DIR}" >> $GITHUB_ENV
-          echo "Installed Android Qt into: ${ANDROID_QT_DIR}"
-          ls -al "${ANDROID_QT_DIR}" || true
-
-      - name: Sanity check paths
-        run: |
-          echo "ANDROID_QT_DIR=${ANDROID_QT_DIR:-<not-set>}"
-          echo "QT_HOST_PATH=${QT_HOST_PATH:-<not-set>}"
-          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
-          echo "ANDROID_NDK_ROOT=${ANDROID_NDK_ROOT:-<not-set>}"
-          echo "PATH=${PATH}"
+          ls -la "${ANDROID_QT_DIR}" || true
 
       - name: Configure (qt-cmake)
         run: |
-          set -euo pipefail
           QT_CMAKE_BIN="${QT_HOST_PATH}/bin/qt-cmake"
           if [ ! -x "${QT_CMAKE_BIN}" ]; then
             echo "ERROR: qt-cmake not found at ${QT_CMAKE_BIN}"
             ls -la "${QT_HOST_PATH}/bin" || true
             exit 1
           fi
-          echo "Using $QT_CMAKE_BIN for configure"
-          "$QT_CMAKE_BIN" -S . -B "${BUILD_DIR}" -G Ninja \
+          mkdir -p "${BUILD_DIR}"
+          "${QT_CMAKE_BIN}" -S "${ANDROID_WORKDIR}" -B "${BUILD_DIR}" -G Ninja \
             -DCMAKE_PREFIX_PATH="${ANDROID_QT_DIR}" \
             -DQT_HOST_PATH="${QT_HOST_PATH}" \
             -DCMAKE_BUILD_TYPE=Release \
@@ -245,11 +200,9 @@ jobs:
       - name: Package APK/AAB (optional targets)
         continue-on-error: true
         run: |
-          echo "Attempting to build APK/AAB if targets exist..."
-          cmake --build "${BUILD_DIR}" --target apk 2>&1 | tee /tmp/apk-build.log || echo "apk target not available or failed"
-          cmake --build "${BUILD_DIR}" --target aab 2>&1 | tee /tmp/aab-build.log || echo "aab target not available or failed"
-          echo "=== Build artifacts found ==="
-          find "${BUILD_DIR}" -name "*.apk" -o -name "*.aab" -print || echo "No APK/AAB files found"
+          cmake --build "${BUILD_DIR}" --target apk || true
+          cmake --build "${BUILD_DIR}" --target aab || true
+          find "${BUILD_DIR}" -name "*.apk" -o -name "*.aab" -print || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -258,6 +211,4 @@ jobs:
           path: |
             ${{ env.BUILD_DIR }}/**/*.apk
             ${{ env.BUILD_DIR }}/**/*.aab
-            ${{ env.BUILD_DIR }}/android-build/**/outputs/**/*.apk
-            ${{ env.BUILD_DIR }}/android-build/**/outputs/**/*.aab
           if-no-files-found: warn
