@@ -8,8 +8,10 @@
 # - Adjust QT_VERSION, ANDROID_API_LEVEL, ANDROID_NDK_VERSION, BUILD_TOOLS_VERSION and ANDROID_WORKDIR to match your project.
 # - This workflow may be slower the first run since it downloads SDK/NDK and Qt. Use a self-hosted runner or Docker image for faster repeated runs.
 
+name: Android Build
+
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 env:
   JAVA_VERSION: "11"
