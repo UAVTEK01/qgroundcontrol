@@ -1,10 +1,12 @@
-name: Android Build (Qt 6.8.3, no aqt)
+name: Android Build (Qt 6.8.3, host-first)
 
 on:
   workflow_dispatch: {}
 
 permissions:
   contents: read
+  # give workflows permission to read/write if you later need it:
+  # workflows: write
 
 jobs:
   build:
@@ -12,12 +14,13 @@ jobs:
     env:
       ANDROID_API: "34"
       BUILD_DIR: build-android
+      QT_VERSION: "6.8.3"
 
     steps:
       - name: Identify this workflow
         run: |
-          echo "This is .github/workflows/build-android.yml"
-          echo "If you see 'aqtinstall' in logs, another workflow is still running."
+          echo "This is .github/workflows/test_build.yml"
+          echo "Run manually from Actions → this workflow → Run workflow (select branch: master)."
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,17 +52,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build
 
-      # ---------- Host Qt (tools for qt-cmake, rcc, etc.) ----------
-      - name: Install Qt 6.8.3 (Host gcc_64)
+      # ---------- Host Qt (install first - provides qt-cmake, rcc, etc.) ----------
+      - name: Install Qt host (desktop gcc_64)
         id: qt_host
         uses: jurplel/install-qt-action@v4
         with:
-          version: 6.8.3
+          version: ${{ env.QT_VERSION }}
           host: linux
           target: desktop
           arch: gcc_64
           cache: true
-          # ensure core desktop modules so qt-cmake and tools are present
           modules: qtbase qttools qtdeclarative qtquickcontrols2 qtsvg qtserialport qtlocation qtpositioning qtimageformats qtconnectivity qtshadertools qt5compat
 
       - name: Capture Host Qt path
@@ -67,15 +69,14 @@ jobs:
 
       - name: Verify qt-cmake exists and add to PATH (fail fast)
         run: |
-          # Primary expected location from the action
           QT_CMAKE="${QT_HOST_PATH}/bin/qt-cmake"
           if [ -x "$QT_CMAKE" ]; then
             echo "Found qt-cmake at $QT_CMAKE"
           else
-            # Fallback quick checks
+            # quick fallbacks
             CANDIDATES=(
-              "/home/runner/Qt/6.8.3/gcc_64/bin/qt-cmake"
-              "/opt/hostedtoolcache/Qt/6.8.3/gcc_64/bin/qt-cmake"
+              "/home/runner/Qt/${{ env.QT_VERSION }}/gcc_64/bin/qt-cmake"
+              "/opt/hostedtoolcache/Qt/${{ env.QT_VERSION }}/gcc_64/bin/qt-cmake"
             )
             for c in "${CANDIDATES[@]}"; do
               if [ -x "$c" ]; then
@@ -84,16 +85,79 @@ jobs:
               fi
             done
           fi
-
-          # Wide search fallback (may be slower)
+          # wide search fallback (slower)
           if [ -z "$QT_CMAKE" ]; then
             QT_CMAKE=$(find /home/runner /opt -type f -name qt-cmake -executable 2>/dev/null | head -n1 || true)
           fi
-
           if [ -z "$QT_CMAKE" ]; then
-            echo "ERROR: qt-cmake not found after host Qt install. Diagnostic listing:"
+            echo "ERROR: qt-cmake not found after host Qt install. Diagnostic listings:"
             echo "Contents of QT_HOST_PATH (${QT_HOST_PATH}):"
             ls -al "${QT_HOST_PATH}" || true
             echo "/home/runner/Qt listing:"
-            ls -al /home/runner/Qt || true](#)
-
+            ls -al /home/runner/Qt || true
+            echo "/opt/hostedtoolcache/Qt listing:"
+            ls -al /opt/hostedtoolcache/Qt || true
+            exit 1
+          fi
+          QT_BIN=$(dirname "$QT_CMAKE")
+          echo "Adding $QT_BIN to PATH"
+          echo "$QT_BIN" >> $GITHUB_PATH
+          "$QT_CMAKE" --version || true
+
+      # ---------- Qt for Android (install after host) ----------
+      - name: Install Qt for Android (arm64-v8a)
+        id: qt_android
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: android
+          arch: android_arm64_v8a
+          modules: qtserialport qtlocation qtpositioning qtimageformats qtconnectivity qtshadertools
+          cache: true
+
+      - name: Capture Android Qt path
+        run: echo "ANDROID_QT_DIR=${QTDIR}" >> $GITHUB_ENV
+
+      - name: Sanity check paths
+        run: |
+          echo "ANDROID_QT_DIR=${ANDROID_QT_DIR}"
+          echo "QT_HOST_PATH=${QT_HOST_PATH}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
+          echo "ANDROID_NDK_ROOT=${ANDROID_NDK_ROOT}"
+          echo "PATH=${PATH}"
+
+      - name: Configure (qt-cmake)
+        run: |
+          # Use qt-cmake from PATH or fallback to host path
+          if command -v qt-cmake >/dev/null 2>&1; then
+            QT_CMAKE_BIN="qt-cmake"
+          else
+            QT_CMAKE_BIN="${QT_HOST_PATH}/bin/qt-cmake"
+          fi
+          echo "Using $QT_CMAKE_BIN for configure"
+          "$QT_CMAKE_BIN" -S . -B "${BUILD_DIR}" -G Ninja \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-${ANDROID_API} \
+            -DQT_ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT}" \
+            -DQT_ANDROID_NDK_ROOT="${ANDROID_NDK_ROOT}" \
+            -DQT_HOST_PATH="${QT_HOST_PATH}" \
+            -DCMAKE_PREFIX_PATH="${ANDROID_QT_DIR}" \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build "${BUILD_DIR}" --config Release -j"$(nproc)"
+
+      - name: Package (best-effort)
+        run: |
+          cmake --build "${BUILD_DIR}" --target apk || true
+          cmake --build "${BUILD_DIR}" --target aab || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-output
+          path: |
+            ${BUILD_DIR}/**/*.apk
+            ${BUILD_DIR}/**/*.aab
+          if-no-files-found: warn
