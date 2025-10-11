@@ -1,25 +1,22 @@
-name: Android APK (Manual, Qt 6
+name: Android APK (clean)
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-android:
+  build:
     runs-on: ubuntu-22.04
-
     env:
-      QT_VERSION: "6.9.3"          # QGC allows 6.8.3...6.10.0; 6.9.3 is reliable
+      QT_VERSION: "6.8.3"
       ANDROID_API: "34"
-      BUILD_DIR: "build-android"
+      BUILD_DIR: build-android
 
     steps:
-      - name: Checkout (with submodules)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
@@ -29,7 +26,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build unzip zip curl
 
-      - name: Install Android NDK r27c
+      - name: Android NDK r27c
         id: ndk
         uses: nttld/setup-ndk@v1
         with:
@@ -41,7 +38,7 @@ jobs:
           echo "ANDROID_NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
           echo "NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
 
-      - name: Install Android SDK + platforms/build-tools
+      - name: Android SDK (cmdline-tools + platform/build-tools)
         env:
           ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
           ANDROID_HOME:     ${{ github.workspace }}/android-sdk
@@ -53,46 +50,43 @@ jobs:
           mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" \
-            "platform-tools" \
-            "platforms;android-${ANDROID_API}" \
-            "build-tools;34.0.0"
+            "platform-tools" "platforms;android-${ANDROID_API}" "build-tools;34.0.0"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT"     >> $GITHUB_ENV
 
-      # Qt desktop host kit (provides qt-cmake)
-      - name: Install Qt host (gcc_64)
-        uses: jurplel/install-qt-action@v4
+      # Qt host kit (gcc_64) — pin aqt version and use a reliable mirror
+      - uses: jurplel/install-qt-action@v4
         with:
-          version:    ${{ env.QT_VERSION }}
+          version:    "6.8.3"
           host:       linux
           target:     desktop
           arch:       gcc_64
+          aqtversion: "==3.2.2"                     # stable with Qt 6.8.x feeds
+          mirror:     "https://mirrors.ocf.berkeley.edu/qt/"
           cache:      true
-          aqtversion: "==3.3.0"
+          # Work around the 'qt_base' XML glitch by asking explicitly for qtbase archive
+          archives:   "qtbase"
 
-      # Qt Android kit (arm64-v8a) with modules QGC needs
-      - name: Install Qt android (arm64-v8a)
-        uses: jurplel/install-qt-action@v4
+      # Qt Android kit (arm64) — same pins/mirror
+      - uses: jurplel/install-qt-action@v4
         with:
-          version:    ${{ env.QT_VERSION }}
+          version:    "6.8.3"
           host:       linux
           target:     android
           arch:       android_arm64_v8a
-          modules:    qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat
+          aqtversion: "==3.2.2"
+          mirror:     "https://mirrors.ocf.berkeley.edu/qt/"
           cache:      true
-          aqtversion: "==3.3.0"
+          modules:    "qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat"
+          archives:   "qtbase"
 
-      - name: Sanity check
+      - name: Sanity
         run: |
-          echo "qt-cmake path: $(command -v qt-cmake || true)"
+          command -v qt-cmake
           qt-cmake --version
-          cmake --version
           ninja --version
 
-      - name: Configure (Android arm64-v8a)
-        env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
-          ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_ROOT }}
+      - name: Configure
         run: |
           qt-cmake -S . -B "${BUILD_DIR}" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -111,8 +105,7 @@ jobs:
           find "${BUILD_DIR}" -name "*.apk" -print || true
           find "${BUILD_DIR}" -name "*.aab" -print || true
 
-      - name: Upload APK/AAB
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: qgroundcontrol-android
           path: |
