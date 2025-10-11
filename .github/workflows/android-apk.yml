@@ -54,7 +54,7 @@ jobs:
 
       # -----------------------------
       # Qt install via maintained action
-      # (avoids aqt XML/module name issues)
+      # (avoid explicit module names that may not exist)
       # -----------------------------
 
       - name: Install Qt host tools (linux desktop gcc_64)
@@ -64,7 +64,7 @@ jobs:
           host: linux
           target: desktop
           arch: gcc_64
-          modules: qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat
+          # modules intentionally omitted to let the action install defaults
 
       - name: Install Qt for Android (arm64-v8a)
         uses: jurplel/install-qt-action@v4
@@ -73,14 +73,31 @@ jobs:
           host: linux
           target: android
           arch: android_arm64_v8a
-          modules: qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat
+          # modules intentionally omitted to let the action install defaults
 
-      - name: Locate qt-cmake (debug info)
+      - name: Locate qt-cmake & show Qt tree (debug info)
         run: |
           which qt-cmake || true
           qt-cmake --version || true
           echo "IQTA_QT_ROOT_DIR=${IQTA_QT_ROOT_DIR}"
           echo "IQTA_TOOLS=${IQTA_TOOLS}"
+          # list the installed Qt directories (if variables available)
+          if [ -n "${IQTA_QT_ROOT_DIR}" ]; then
+            echo "Contents of IQTA_QT_ROOT_DIR:"
+            ls -la "${IQTA_QT_ROOT_DIR}" || true
+          fi
+          if [ -n "${IQTA_TOOLS}" ]; then
+            echo "Contents of IQTA_TOOLS:"
+            ls -la "${IQTA_TOOLS}" || true
+          fi
+          # Print qt installation directories under /opt/Qt (common location used by the action)
+          echo "Checking common locations for installed Qt packages:"
+          for p in /opt/Qt "$HOME/Qt"; do
+            if [ -d "$p" ]; then
+              echo "Found $p"
+              ls -la "$p" || true
+            fi
+          done
 
       - name: Configure CMake for Android
         run: |
