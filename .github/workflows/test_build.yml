@@ -1,7 +1,7 @@
-name: Android (Qt 6.8.3)..
+name: Android (Qt 6.8.3)
 
 on:
-  workflow_dispatch: {}   # Manual trigger only — shows the “Run workflow” button
+  workflow_dispatch: {}   # manual only
 
 permissions:
   contents: read
@@ -32,7 +32,7 @@ jobs:
 
       - name: Accept Android SDK licenses & install platforms
         run: |
-          yes | sdkmanager --licenses || true   # ignore Broken pipe exit
+          yes | sdkmanager --licenses || true
           sdkmanager "platform-tools" "platforms;android-${ANDROID_API}" "build-tools;34.0.0"
 
       - name: Setup Android NDK (r27c)
@@ -44,20 +44,18 @@ jobs:
       - name: Install Ninja
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      # Qt for Android (arm64) — modules that are *available* for Android
-      - name: Install Qt 6.8.3 (Android)
+      # Qt for Android (arm64) – use only modules that exist for Android
+      - name: Install Qt 6.8.3 (Android arm64-v8a)
         uses: jurplel/install-qt-action@v4
         with:
           version: 6.8.3
           host: linux
           target: android
           arch: android_arm64_v8a
-          # These modules exist for Android in Qt 6; do not list qtquickcontrols2/qtsvg here
           modules: qtserialport qtlocation qtpositioning qtimageformats qtconnectivity qtshadertools
-          tools: "android"
           cache: true
 
-      # Host Qt (gcc_64) to provide Qt tools that CMake expects on the host
+      # Host Qt to provide tools CMake expects
       - name: Install Qt 6.8.3 (Host gcc_64)
         uses: jurplel/install-qt-action@v4
         with:
@@ -85,7 +83,6 @@ jobs:
         run: |
           cmake --build ${BUILD_DIR} --target apk  || true
           cmake --build ${BUILD_DIR} --target aab  || true
-          echo "✅ Packaging attempted (skips are OK if your project doesn't define these targets)."
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
