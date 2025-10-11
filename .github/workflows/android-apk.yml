@@ -8,13 +8,13 @@ jobs:
     runs-on: ubuntu-22.04
 
     env:
-      QT_VERSION: "6.6.3"
+      QT_VERSION: "6.8.3"                         # REQUIRED: project requests 6.8.3...6.10.0
       ANDROID_API: "33"
-      ANDROID_NDK_VERSION: "25.2.9519653"           # r25c (Qt 6.6.x compatible)
+      ANDROID_NDK_VERSION: "26.1.10909125"        # REQUIRED for Qt 6.8.x
       ANDROID_SDK_ROOT: "${{ github.workspace }}/android-sdk"
       ANDROID_HOME: "${{ github.workspace }}/android-sdk"
-      NDK_ROOT: "${{ github.workspace }}/android-sdk/ndk/25.2.9519653"
-      ANDROID_NDK_HOME: "${{ github.workspace }}/android-sdk/ndk/25.2.9519653"
+      NDK_ROOT: "${{ github.workspace }}/android-sdk/ndk/${{ env.ANDROID_NDK_VERSION }}"
+      ANDROID_NDK_HOME: "${{ github.workspace }}/android-sdk/ndk/${{ env.ANDROID_NDK_VERSION }}"
       BUILD_DIR: build-android
       QT_HOST_KIT: "gcc_64"
       QT_ANDROID_KIT: "android_arm64_v8a"
@@ -38,7 +38,7 @@ jobs:
           sudo apt-get install -y ninja-build python3-pip unzip zip curl
           python3 -m pip install --upgrade "aqtinstall>=3.3.0"
 
-      - name: Install Android SDK + NDK r25c
+      - name: Install Android SDK + NDK
         run: |
           set -e
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
@@ -46,7 +46,6 @@ jobs:
           unzip -q cmdtools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
           mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
 
-          # Make sure sdkmanager is on PATH for this step and later ones
           export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
 
           yes | sdkmanager --licenses
@@ -56,18 +55,17 @@ jobs:
             "build-tools;34.0.0" \
             "ndk;${ANDROID_NDK_VERSION}"
 
-          # Helpful PATH exports for subsequent steps
           echo "PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/build-tools/34.0.0:$PATH" >> $GITHUB_ENV
 
-      - name: Install Qt 6.6.3 (host + Android kits)
+      - name: Install Qt (host + Android kits)
         run: |
           set -e
           mkdir -p $HOME/Qt
 
-          # Host (desktop) kit
+          # Host kit
           for i in 1 2 3; do aqt install-qt --base "${QT_BASE_URL}" linux desktop ${QT_VERSION} ${QT_HOST_KIT} --outputdir $HOME/Qt && break || sleep 10; done
 
-          # Android kit (+ modules QGC typically needs)
+          # Android kit (common modules)
           for i in 1 2 3; do \
             aqt install-qt --base "${QT_BASE_URL}" linux android ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir $HOME/Qt \
               -m qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat \
@@ -98,14 +96,11 @@ jobs:
           set -e
           export QT_HOST_PATH="${QT_HOST_PATH:-$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}}"
           export QT_ANDROID_PATH="${QT_ANDROID_PATH:-$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}}"
+          export PATH="$QT_HOST_PATH/bin:$PATH"
 
           echo "QT_HOST_PATH=${QT_HOST_PATH}"
           echo "QT_ANDROID_PATH=${QT_ANDROID_PATH}"
 
-          # Ensure Qt host bin on PATH so lrelease, rcc, etc. are discoverable
-          export PATH="$QT_HOST_PATH/bin:$PATH"
-
-          # Use Qt's wrapper to help CMake find the right Qt6 packages
           set -o pipefail
           "$QT_HOST_PATH/bin/qt-cmake" -S . -B "${BUILD_DIR}" -G Ninja \
             -D CMAKE_BUILD_TYPE=Release \
