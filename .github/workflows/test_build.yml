@@ -57,6 +57,9 @@ jobs:
           set -euo pipefail
           python3 -m pip install -U aqtinstall
 
+          # show aqt version for diagnostics
+          python3 -m aqt --version || true
+
           OUTPUT_DIR="$HOME/Qt"
           mkdir -p "$OUTPUT_DIR"
 
@@ -65,11 +68,11 @@ jobs:
 
           echo "Attempting to install Qt ${QT_VERSION} for desktop gcc_64 with modules: $DESIRED"
           # Try install; if aqt fails due to module availability, retry with minimal set
-          if python3 -m aqt install-qt linux desktop ${QT_VERSION} gcc_64 --outputdir "$OUTPUT_DIR" --modules $DESIRED --silent --no-progress; then
+          if python3 -m aqt install-qt linux desktop ${QT_VERSION} gcc_64 --outputdir "$OUTPUT_DIR" --modules $DESIRED; then
             echo "Full host Qt install succeeded"
           else
             echo "Full host Qt install failed — falling back to minimal host modules (qtbase qttools)"
-            python3 -m aqt install-qt linux desktop ${QT_VERSION} gcc_64 --outputdir "$OUTPUT_DIR" --modules qtbase qttools --silent --no-progress
+            python3 -m aqt install-qt linux desktop ${QT_VERSION} gcc_64 --outputdir "$OUTPUT_DIR" --modules qtbase qttools
           fi
 
           # Compute and export QT_HOST_PATH (QTDIR equivalent)
@@ -123,6 +126,9 @@ jobs:
           set -euo pipefail
           python3 -m pip install -U aqtinstall
 
+          # show aqt version for diagnostics
+          python3 -m aqt --version || true
+
           OUTPUT_DIR="$HOME/Qt"
           mkdir -p "$OUTPUT_DIR"
 
@@ -130,11 +136,11 @@ jobs:
           DESIRED_ANDROID="qtserialport qtlocation qtpositioning qtimageformats qtconnectivity qtshadertools"
 
           echo "Attempting to install Qt ${QT_VERSION} for android android_arm64_v8a with modules: $DESIRED_ANDROID"
-          if python3 -m aqt install-qt linux android ${QT_VERSION} android_arm64_v8a --outputdir "$OUTPUT_DIR" --modules $DESIRED_ANDROID --silent --no-progress; then
+          if python3 -m aqt install-qt linux android ${QT_VERSION} android_arm64_v8a --outputdir "$OUTPUT_DIR" --modules $DESIRED_ANDROID; then
             echo "Full android Qt install succeeded"
           else
             echo "Full android Qt install failed — retrying with minimal set (qtbase qttools) to ensure tools exist"
-            python3 -m aqt install-qt linux android ${QT_VERSION} android_arm64_v8a --outputdir "$OUTPUT_DIR" --modules qtbase qttools --silent --no-progress || true
+            python3 -m aqt install-qt linux android ${QT_VERSION} android_arm64_v8a --outputdir "$OUTPUT_DIR" --modules qtbase qttools || true
           fi
 
           ANDROID_QT_DIR="${OUTPUT_DIR}/${QT_VERSION}/android_arm64_v8a"
