@@ -1,12 +1,6 @@
-name: Android Build (Qt 6.8.x host-first)
+name: Android Build test
 
 on:
-  push:
-    branches:
-      - master
-  pull_request:
-    branches:
-      - master
   workflow_dispatch: {}
 
 permissions:
