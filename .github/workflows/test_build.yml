@@ -51,19 +51,35 @@ jobs:
           sudo apt-get install -y ninja-build
 
       # ---------- Host Qt (install first - provides qt-cmake, rcc, etc.) ----------
-      - name: Install Qt host (desktop gcc_64)
+      - name: Install Qt host (desktop gcc_64) (aqt, dynamic modules, fallback)
         id: qt_host
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: ${{ env.QT_VERSION }}
-          host: linux
-          target: desktop
-          arch: gcc_64
-          cache: true
-          modules: qtbase qttools qtdeclarative qtquickcontrols2 qtsvg qtserialport qtlocation qtpositioning qtimageformats qtconnectivity qtshadertools qt5compat
+        run: |
+          set -euo pipefail
+          python3 -m pip install -U aqtinstall
+
+          OUTPUT_DIR="$HOME/Qt"
+          mkdir -p "$OUTPUT_DIR"
+
+          # desired modules (edit this list if your project requires others)
+          DESIRED="qtbase qttools qtdeclarative qtquickcontrols2 qtsvg qtserialport qtlocation qtpositioning qtimageformats qtconnectivity qtshadertools qt5compat"
+
+          echo "Attempting to install Qt ${QT_VERSION} for desktop gcc_64 with modules: $DESIRED"
+          # Try install; if aqt fails due to module availability, retry with minimal set
+          if python3 -m aqt install-qt linux desktop ${QT_VERSION} gcc_64 --outputdir "$OUTPUT_DIR" --modules $DESIRED --silent --no-progress; then
+            echo "Full host Qt install succeeded"
+          else
+            echo "Full host Qt install failed — falling back to minimal host modules (qtbase qttools)"
+            python3 -m aqt install-qt linux desktop ${QT_VERSION} gcc_64 --outputdir "$OUTPUT_DIR" --modules qtbase qttools --silent --no-progress
+          fi
+
+          # Compute and export QT_HOST_PATH (QTDIR equivalent)
+          QT_HOST_PATH="${OUTPUT_DIR}/${QT_VERSION}/gcc_64"
+          echo "QT_HOST_PATH=${QT_HOST_PATH}" >> $GITHUB_ENV
+          echo "Installed host Qt into: ${QT_HOST_PATH}"
+          ls -al "${QT_HOST_PATH}" || true
 
       - name: Capture Host Qt path
-        run: echo "QT_HOST_PATH=${QTDIR}" >> $GITHUB_ENV
+        run: echo "QT_HOST_PATH=${QTDIR:-$QT_HOST_PATH}" >> $GITHUB_ENV
 
       - name: Verify qt-cmake exists and add to PATH (fail fast)
         run: |
@@ -72,8 +88,8 @@ jobs:
             echo "Found qt-cmake at $QT_CMAKE"
           else
             CANDIDATES=(
-              "/home/runner/Qt/${{ env.QT_VERSION }}/gcc_64/bin/qt-cmake"
-              "/opt/hostedtoolcache/Qt/${{ env.QT_VERSION }}/gcc_64/bin/qt-cmake"
+              "/home/runner/Qt/${QT_VERSION}/gcc_64/bin/qt-cmake"
+              "/opt/hostedtoolcache/Qt/${QT_VERSION}/gcc_64/bin/qt-cmake"
             )
             for c in "${CANDIDATES[@]}"; do
               if [ -x "$c" ]; then
@@ -101,19 +117,33 @@ jobs:
           "$QT_CMAKE" --version || true
 
       # ---------- Qt for Android (install after host) ----------
-      - name: Install Qt for Android (arm64-v8a)
+      - name: Install Qt for Android (arm64-v8a) (aqt, dynamic modules, fallback)
         id: qt_android
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: ${{ env.QT_VERSION }}
-          host: linux
-          target: android
-          arch: android_arm64_v8a
-          modules: qtserialport qtlocation qtpositioning qtimageformats qtconnectivity qtshadertools
-          cache: true
+        run: |
+          set -euo pipefail
+          python3 -m pip install -U aqtinstall
+
+          OUTPUT_DIR="$HOME/Qt"
+          mkdir -p "$OUTPUT_DIR"
+
+          # desired Android modules (edit as needed)
+          DESIRED_ANDROID="qtserialport qtlocation qtpositioning qtimageformats qtconnectivity qtshadertools"
+
+          echo "Attempting to install Qt ${QT_VERSION} for android android_arm64_v8a with modules: $DESIRED_ANDROID"
+          if python3 -m aqt install-qt linux android ${QT_VERSION} android_arm64_v8a --outputdir "$OUTPUT_DIR" --modules $DESIRED_ANDROID --silent --no-progress; then
+            echo "Full android Qt install succeeded"
+          else
+            echo "Full android Qt install failed — retrying with minimal set (qtbase qttools) to ensure tools exist"
+            python3 -m aqt install-qt linux android ${QT_VERSION} android_arm64_v8a --outputdir "$OUTPUT_DIR" --modules qtbase qttools --silent --no-progress || true
+          fi
+
+          ANDROID_QT_DIR="${OUTPUT_DIR}/${QT_VERSION}/android_arm64_v8a"
+          echo "ANDROID_QT_DIR=${ANDROID_QT_DIR}" >> $GITHUB_ENV
+          echo "Installed Android Qt into: ${ANDROID_QT_DIR}"
+          ls -al "${ANDROID_QT_DIR}" || true
 
       - name: Capture Android Qt path
-        run: echo "ANDROID_QT_DIR=${QTDIR}" >> $GITHUB_ENV
+        run: echo "ANDROID_QT_DIR=${ANDROID_QT_DIR}" >> $GITHUB_ENV
 
       - name: Sanity check paths
         run: |
