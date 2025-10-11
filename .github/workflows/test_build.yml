@@ -8,14 +8,9 @@ jobs:
     runs-on: ubuntu-22.04
 
     env:
-      QT_VERSION: "6.8.3"               # QGC CMake asks for 6.8.3..6.10.0
+      QT_VERSION: "6.8.3"          # QGC requires 6.8.3..6.10.0
       ANDROID_API: "34"
       BUILD_DIR: "build-android"
-      QT_HOST_KIT: "gcc_64"
-      QT_ANDROID_KIT: "android_arm64_v8a"
-      QT_BASE_URL: "https://download.qt.io"
-      ANDROID_SDK_ROOT: "${{ github.workspace }}/android-sdk"
-      ANDROID_HOME:     "${{ github.workspace }}/android-sdk"
 
     steps:
       - name: Checkout (with submodules)
@@ -29,14 +24,13 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Install Ninja + helpers
+      - name: Install base tools
         run: |
           set -e
           sudo apt-get update
-          sudo apt-get install -y ninja-build python3-pip unzip zip curl
-          python3 -m pip install --upgrade "aqtinstall>=3.3.0"
+          sudo apt-get install -y ninja-build unzip zip curl
 
-      - name: Set up NDK r27c
+      - name: Install NDK r27c
         id: ndk
         uses: nttld/setup-ndk@v1
         with:
@@ -49,6 +43,9 @@ jobs:
           echo "NDK_ROOT=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
 
       - name: Install Android SDK (cmdline-tools, platform, build-tools)
+        env:
+          ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+          ANDROID_HOME:     ${{ github.workspace }}/android-sdk
         run: |
           set -e
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
@@ -57,67 +54,62 @@ jobs:
           mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
 
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses
-
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" \
             "platform-tools" \
             "platforms;android-${ANDROID_API}" \
             "build-tools;34.0.0"
 
-      - name: Install Qt ${QT_VERSION} (host + android kits)
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT"     >> $GITHUB_ENV
+
+      # Host (desktop) Qt kit -> provides qt-cmake on PATH
+      - name: Install Qt host ${ {env.QT_VERSION} }
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: desktop
+          arch: gcc_64
+          cache: true
+          aqtversion: "==3.3.0"
+
+      # Android kit (modules used by QGC)
+      - name: Install Qt android ${ {env.QT_VERSION} }
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: android
+          arch: android_arm64_v8a
+          modules: qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat
+          cache: true
+          aqtversion: "==3.3.0"
+
+      - name: Sanity check (qt-cmake & Qt dirs)
         run: |
           set -e
-          mkdir -p "$HOME/Qt"
+          echo "which qt-cmake => $(command -v qt-cmake || true)"
+          qt-cmake --version
+          echo "Qt6_DIR=${Qt6_DIR:-unset}"
+          echo "QTDIR=${QTDIR:-unset}"
+          # Print discovered Qt roots (install-qt-action exports $Qt6_DIR and adjusts PATH)
+          ls -la "${Qt6_DIR%/lib/cmake/Qt6}/bin" || true
 
-          # Host kit (desktop)
-          for i in 1 2 3; do \
-            aqt install-qt --base "${QT_BASE_URL}" linux desktop ${QT_VERSION} ${QT_HOST_KIT} --outputdir "$HOME/Qt" && break || sleep 10; \
-          done
-
-          # Android kit
-          for i in 1 2 3; do \
-            aqt install-qt --base "${QT_BASE_URL}" linux android ${QT_VERSION} ${QT_ANDROID_KIT} --outputdir "$HOME/Qt" \
-                -m qtserialport qtlocation qtpositioning qtsvg qtimageformats qtconnectivity qtshadertools qtquickcontrols2 qt5compat \
-                && break || sleep 10; \
-          done
-
-          echo "QT_HOST_PATH=$HOME/Qt/${QT_VERSION}/${QT_HOST_KIT}" >> $GITHUB_ENV
-          echo "QT_ANDROID_PATH=$HOME/Qt/${QT_VERSION}/${QT_ANDROID_KIT}" >> $GITHUB_ENV
-
-      - name: Sanity check Qt layout
-        run: |
-          set -e
-          echo "QT_HOST_PATH=$QT_HOST_PATH"
-          echo "QT_ANDROID_PATH=$QT_ANDROID_PATH"
-          test -x "$QT_HOST_PATH/bin/qt-cmake" || { echo "::error::qt-cmake missing at $QT_HOST_PATH/bin/qt-cmake"; ls -la "$QT_HOST_PATH/bin" || true; exit 1; }
-          ls -la "$QT_HOST_PATH" || true
-          ls -la "$QT_ANDROID_PATH" || true
-
-      - name: Configure (qt-cmake for Android)
+      - name: Configure (Android arm64-v8a)
         env:
-          QT_HOST_PATH: ${{ env.QT_HOST_PATH }}
-          QT_ANDROID_PATH: ${{ env.QT_ANDROID_PATH }}
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_ROOT }}
         run: |
           set -e
-          export PATH="$QT_HOST_PATH/bin:$PATH"
-
-          echo "JAVA_HOME=$JAVA_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
-          echo "Using qt-cmake: $(command -v qt-cmake)"
-
-          # qt-cmake auto-loads Qt's Android toolchain when SDK/NDK are set
+          # qt-cmake auto-picks Qt’s Android toolchain when SDK/NDK are present
           qt-cmake -S . -B "${BUILD_DIR}" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DQT_HOST_PATH="${QT_HOST_PATH}" \
             -DQT_ANDROID_ABIS=arm64-v8a \
             -DQT_ANDROID_BUILD_ALL_ABIS=OFF \
             -DANDROID_SDK_ROOT="${ANDROID_SDK_ROOT}" \
-            -DANDROID_NDK_ROOT="${ANDROID_NDK_ROOT}" \
-            -DCMAKE_PREFIX_PATH="${QT_ANDROID_PATH};${QT_HOST_PATH}"
+            -DANDROID_NDK_ROOT="${ANDROID_NDK_ROOT}"
 
-      - name: Build
+      - name: Build (verbose)
         run: cmake --build "${BUILD_DIR}" --config Release -- -v
 
       - name: Package APK (best-effort)
